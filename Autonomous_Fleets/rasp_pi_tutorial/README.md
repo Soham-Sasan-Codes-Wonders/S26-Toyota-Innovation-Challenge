@@ -4,18 +4,22 @@ You have the option to run the client code on your local computer or on the Rasp
 ## Usage Description: 
 The raspberry pi essentially replaces your laptop to plug into the PRIZM controller. It will run the same client.py code that you would run on your laptop. It also enables for local processing on the pi, such as computer vision processing through a camera module. For a documentation of useful computer vision for the robot, click [here].
 
-**TL, DR for running**: launch central-arbiter.py in your computer, client.py on the raspberry pi, and prizm firmware on the prizm controller. The raspberry pi will communicate with the prizm controller through a USB cable, and communicate with your computer through wifi.
+**TL, DR for running**: launch central-arbiter.py in your computer, client.py on the raspberry pi, and prizm firmware on the prizm controller. The raspberry pi will communicate with the prizm controller through a USB cable, and communicate with your computer through the network.
 
 ## Note:
-- Please **speak to a co-op student or a TA** if you are interested in controlling one or more of your robots with Raspberry Pi. They need to provide you with the raspberry pi, credentials to use the pi, and hardware to mount the pi on the robot. Note **inventory is limited**, so please reach out early if you are interested in using the raspberry pi.
+- Please **speak to a co-op student or a TA** if you are interested in controlling one or more of your robots with Raspberry Pi. They need to provide you with the raspberry pi, credentials to use the pi, a generated authentication key, and hardware to mount the pi on the robot. Note **inventory is limited**, so please reach out early if you are interested in using the raspberry pi.
 
-- you will also be on an alternate network to allow direct IP pinging. Ensure you obtain credential for the network as well. 
+- You will also be on an alternate network to allow direct IP pinging. Ensure you obtain credential for the network as well.
 
 - After obtaining the raspberry pi and its kits, the steps below are for setting up the "sync" between your local computer and the Raspberry Pi. This allows you to edit code on your local computer and have it automatically update on the Raspberry Pi, which is much more convenient than editing code directly on the Pi.
 
+## Setting Up Tailscale:
+- Download Tailscale by going to the following website: https://tailscale.com/docs/install/windows
+- Activate auth key with `sudo tailscale up --auth-key=tskey-auth-your-key-here`
+- By doing `tailscale status`, you can see the other nodes on the server
+- Now you can ssh into the pi terminal by going to the next section
 
 ## Setting Up the "Sync"
-
 1. Install: Search for the SFTP extension in VS Code (the one by Natizyskane is popular) and install it.
 <img src="sftp.png" width="50%" alt="Description">
 
@@ -154,4 +158,20 @@ Summary of common commands:
 | **Check Pi Temp** | `vcgencmd measure_temp` |
 | **Monitor Serial Data** | `arduino-cli monitor -p /dev/ttyUSB0 -s 115200` |
 
+## 5. Configure Correct Ports 
+The connection between devices is now setup as such:
+
+Laptop -> Rasp Pi (through Tailscale network)
+
+Rasp Pi -> PRIZM (through USB serial)
+
+The system was initially configured for communication with a local Windows laptop. To run it using Raspberry Pi OS and Tailscale, update the `.env` file and device settings as follows
+
+- On the **laptop running `central-arbiter.py`**, retrieve its Tailscale IP:
+     - `tailscale ip -4`. This will return your device IP address, for e.x. 100.12.345.67. Input this into SERVER_HOST_IP_ADDRESS
+    
+- Ensure USE_WIFI_BRIDGE=false
+  
+- On Raspberry Pi OS, USB serial devices typically appear as: `/dev/ttyUSB#` and not `COM#`
+    - So change LOCAL_SERIAL_PORT="/dev/ttyUSB0" to reflect the serial port that is connected to the PRIZM
 
