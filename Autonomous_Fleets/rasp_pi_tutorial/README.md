@@ -14,10 +14,35 @@ The raspberry pi essentially replaces your laptop to plug into the PRIZM control
 - After obtaining the raspberry pi and its kits, the steps below are for setting up the "sync" between your local computer and the Raspberry Pi. This allows you to edit code on your local computer and have it automatically update on the Raspberry Pi, which is much more convenient than editing code directly on the Pi.
 
 ## Setting Up Tailscale:
-- Download Tailscale by going to the following website: https://tailscale.com/docs/install/windows
-- Activate auth key with `sudo tailscale up --auth-key=tskey-auth-your-key-here`
-- By doing `tailscale status`, you can see the other nodes on the server
-- Now you can ssh into the pi terminal by going to the next section
+1. Download Tailscale by going to the following website: https://tailscale.com/docs/install/windows
+2. Activate auth key with `tailscale up --auth-key=tskey-auth-your-key-here`. If needed, use `sudo`.
+3. By doing `tailscale status`, you can see the other nodes on the server. You will see your Pi connnected to the server; if the Pi is disconnected, **get a TA**
+4. SSH into your Pi:
+    - The Pi Provided to you should have a piece of paper with the following information: IP adderess, username, and password
+    - Open a terminal (either through VS code or your computer's own terminal) and type `ssh (username)@(IP address)` (replace with the actual username and IP address provided to you)
+    - If prompted, enter the password. 
+  For example:
+    ```bash
+    ~ tailscale up --auth-key=tskey-auth-k123e657fgyhuoji68t79huionji76fy8gu
+    ~ tailscale up         //do this if tailscale status returns an error
+    ~ tailscale status
+
+    100.Your.Ip.Address   YourLaptop       skaushik@  windows  -
+    100.Your.Pi.Ip        ideasclinicpi#   skaushik@  linux    -
+
+   ~ ssh (username)@(IP address)
+    ```
+    -  You should now be logged into the Pi through the terminal.
+
+5. Now you can setup a folder that your code will live in.
+    ```bash
+    # 1. Navigate to the home directory (the safest place for code)
+        cd ~
+    # 2. Create a new folder (e.g., 'robot_project')
+        mkdir robot_project
+    # 3. Enter that folder
+        cd robot_project
+    ```
 
 ## Setting Up the "Sync"
 1. Install: Search for the SFTP extension in VS Code (the one by Natizyskane is popular) and install it.
@@ -27,12 +52,12 @@ The raspberry pi essentially replaces your laptop to plug into the PRIZM control
 3. Configure: Your .vscode/sftp.json. Paste the following code into that file.
 ```json
 {
-    "name": "Robot-Pi-Sync", // Name of the connection
-    "host": "10.37.x.x", // Your Pi's IP
+    "name": "Robot-Pi-Sync", // Name of the connection 
+    "host": "10.37.x.x", // Your Pi's IP (given on paper)
     "protocol": "sftp",
     "port": 22,
-    "username": "pi",
-    "remotePath": "/home/pi/YourProjectFolder",// The folder on the Pi where you want to sync your code
+    "username": "XX", //Pi username (given on paper)
+    "remotePath": "/home/pi/robot_project", //The folder on the Pi where you want to sync your code
     "uploadOnSave": true,
     "ignore": [
         ".vscode",
@@ -41,27 +66,10 @@ The raspberry pi essentially replaces your laptop to plug into the PRIZM control
     ]
 }
 ```
+4. Replace the "host", "username" fields in the sftp.json file with the actual information provided to you.
+5. Now, update the "remotePath" field in your sftp.json file to match the path of the folder you just created. simply copy the path shown in your terminal (after you cd into the folder) and paste it into the "remotePath" field. For example, if your terminal shows that you are in `"/home/pi/robot_project"`, then your "remotePath" should be `"/home/pi/robot_project"`. Ensure the quotes around the path are preserved when you paste it in, and forward slash.
 
-4. SSH into your Pi to complete your sftp setup: 
-    1. The Pi Provided to you should have a piece of paper with the following information: 
-        - IP address 
-        - username 
-        - password 
-    2. replace the "host", "username" fields in the sftp.json file with the actual information provided to you.
-    3. Open a terminal (either through VS code or your computer's own terminal) and type `ssh (username)@(IP address)` (replace with the actual username and IP address provided to you). For example, if the username is "pi" and the IP address is "12.34.56.78", you would type `ssh pi@12.34.56.78`.
-    4. You will be prompted to enter the password. Enter the password provided to you. You should now be logged into the Pi through the terminal.
-    5. now you can setup a folder that your code will live in.
-    ```bash
-    # 1. Navigate to the home directory (the safest place for code)
-        cd ~
-    # 2. Create a new folder (e.g., 'robot_project')
-        mkdir robot_project
-    # 3. Enter that folder
-        cd robot_project
-    ```
-    6. Now, update the "remotePath" field in your sftp.json file to match the path of the folder you just created. simply copy the path shown in your terminal (after you cd into the folder) and paste it into the "remotePath" field. For example, if your terminal shows that you are in `"/home/pi/robot_project"`, then your "remotePath" should be `"/home/pi/robot_project"`. Ensure the quotes around the path are preserved when you paste it in, and forward slash.
-
-5. ctrl+s in the json file to save the sftp information 
+6. ctrl+s in the json file to save the sftp information 
 
 ## Prepare for syncing
 Be sure you are SSHed into the Pi through the terminal before proceeding with the steps below. 
