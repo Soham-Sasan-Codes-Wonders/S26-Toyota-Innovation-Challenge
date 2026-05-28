@@ -25,6 +25,18 @@ This firmware turns the ESP32 into a WiFi-to-UART bridge for the PRIZM controlle
 
 for alternative pin mappings, see page 129 of the [PRIZM Programming Guide](https://asset.pitsco.com/sharedimages/resources/tetrix-prizm-programming-guide.pdf)
 
+<table align="center">
+  <tr>
+    <td>
+      <img src="images/esp32_circuit_diagram.png" alt="ESP32 Circuit Diagram" width="250">
+    </td>
+    <td width="50"></td>
+    <td>
+      <img src="images/physical_circuit.jpg" alt="Physical Circuit" width="250">
+    </td>
+  </tr>
+</table>
+
 ## Configuration
 
 - UART: 38400 baud, SERIAL_8N1

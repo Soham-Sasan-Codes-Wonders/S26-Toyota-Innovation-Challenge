@@ -50,7 +50,7 @@ class RobotTransport:
             self.ser.flush()
         else:
             # send raw string to ESP32 websocket-like TCP
-            self.sock.sendall(message.encode("utf-8"))
+            self.sock.sendall((message).encode("utf-8"))
 
     def readline(self):
         if self.mode == "serial":
@@ -142,8 +142,7 @@ def encode_payload_for_serial(payload: dict) -> str:
         return "R\n"
     if msg_type == "stop":
         return "S\n"
-    if msg_type == "toggle_gripper":
-        return "G\n"
+
     compact_payload = compact_payload_for_serial(payload)
     return json.dumps(compact_payload, separators=(",", ":")) + "\n"
 

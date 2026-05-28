@@ -185,6 +185,9 @@ Before uploading:
 - Select the serial port for the connected PRIZM controller
 - Confirm the sketch includes `#include <PRIZM.h>` without compile errors
 
+After uploading:
+- Press 'START' (the green button) on the PRIZM to run the sketch
+
 ### 2. Start the Central Arbiter
 
 Run `python_scripts/central-arbiter.py` on the machine acting as the server/operator station.

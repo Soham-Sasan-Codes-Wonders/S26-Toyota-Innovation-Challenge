@@ -110,7 +110,8 @@ class TelemetryGUI:
     # ----------------------------
     # Layout
     # ----------------------------
-    def _build_layout(self):
+    
+    def _build_layout(self): 
         mainframe = ttk.Frame(self.root, padding=8)
         mainframe.pack(fill=tk.BOTH, expand=True)
 
@@ -119,17 +120,35 @@ class TelemetryGUI:
         left_panel.pack(side=tk.LEFT, fill=tk.Y, expand=False)
         left_panel.pack_propagate(False)
 
-        robots_frame = ttk.LabelFrame(left_panel, text="Robots")
+        canvas = tk.Canvas(left_panel)
+        scrollbar = ttk.Scrollbar(left_panel, orient="vertical", command=canvas.yview)
+
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        robots_frame = ttk.LabelFrame(scrollable_frame, text="Robots")
         robots_frame.pack(fill=tk.X, expand=False, padx=(0, 8), pady=(0, 8))
 
         columns = ("robot_id", "state", "x", "y", "theta")
         self.tree = ttk.Treeview(robots_frame, columns=columns, show="headings", height=4)
 
-        self.tree.heading("robot_id", text="robot_id")
-        self.tree.heading("state", text="state")
-        self.tree.heading("x", text="x")
-        self.tree.heading("y", text="y")
-        self.tree.heading("theta", text="theta")
+        for col in columns:
+            self.tree.heading(col, text=col)
 
         self.tree.column("robot_id", width=80, anchor="center")
         self.tree.column("state", width=70, anchor="center")
@@ -149,8 +168,8 @@ class TelemetryGUI:
         self.canvas = FigureCanvasTkAgg(self.fig, master=right_panel)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Create Control Board
-        controls_frame = ttk.LabelFrame(left_panel, text="Test Commands")
+        # Create Control Board  
+        controls_frame = ttk.LabelFrame(scrollable_frame, text="Test Commands")
         controls_frame.pack(fill=tk.X, expand=False, padx=(0, 8), pady=(8, 0))
 
         ttk.Label(controls_frame, text="Target Robot:").pack(fill=tk.X, pady=(4, 2))
@@ -164,7 +183,9 @@ class TelemetryGUI:
         )
         self.robot_selector.pack(fill=tk.X, pady=(0, 6))
 
-        self.selected_robot_summary_var = tk.StringVar(value="Select a robot to send a test path.")
+        self.selected_robot_summary_var = tk.StringVar(
+            value="Select a robot to send a test path."
+        )
         ttk.Label(
             controls_frame,
             textvariable=self.selected_robot_summary_var,
@@ -180,7 +201,7 @@ class TelemetryGUI:
         ttk.Button(controls_frame, text="Send 180 Turn Test", command=self._send_turnaround_test_path).pack(fill=tk.X, pady=2)
         ttk.Button(controls_frame, text="Send L Test Path", command=self._send_test_path).pack(fill=tk.X, pady=2)
 
-        coordination_frame = ttk.LabelFrame(left_panel, text="Grid Coordination")
+        coordination_frame = ttk.LabelFrame(scrollable_frame, text="Grid Coordination")
         coordination_frame.pack(fill=tk.X, expand=False, padx=(0, 8), pady=(8, 0))
 
         ttk.Label(
@@ -191,6 +212,7 @@ class TelemetryGUI:
         ).pack(fill=tk.X, pady=(4, 6))
 
         ttk.Label(coordination_frame, text="Robot 1").pack(fill=tk.X)
+
         self.grid_robot_one_var = tk.StringVar(value="")
         self.grid_robot_one_selector = ttk.Combobox(
             coordination_frame,
@@ -202,14 +224,15 @@ class TelemetryGUI:
 
         robot_one_goal = ttk.Frame(coordination_frame)
         robot_one_goal.pack(fill=tk.X, pady=(0, 6))
+
         ttk.Label(robot_one_goal, text="Goal row").grid(row=0, column=0, sticky="w")
         self.grid_robot_one_row_var = tk.StringVar(value="10")
-        ttk.Entry(robot_one_goal, textvariable=self.grid_robot_one_row_var, width=6).grid(row=0, column=1, padx=(6, 12), sticky="w")
+        ttk.Entry(robot_one_goal, textvariable=self.grid_robot_one_row_var, width=6).grid(row=0, column=1, padx=(6, 12))
         ttk.Label(robot_one_goal, text="Goal col").grid(row=0, column=2, sticky="w")
         self.grid_robot_one_col_var = tk.StringVar(value="10")
-        ttk.Entry(robot_one_goal, textvariable=self.grid_robot_one_col_var, width=6).grid(row=0, column=3, padx=(6, 0), sticky="w")
-
+        ttk.Entry(robot_one_goal, textvariable=self.grid_robot_one_col_var, width=6).grid(row=0, column=3, padx=(6, 0))
         ttk.Label(coordination_frame, text="Robot 2").pack(fill=tk.X)
+
         self.grid_robot_two_var = tk.StringVar(value="")
         self.grid_robot_two_selector = ttk.Combobox(
             coordination_frame,
@@ -221,12 +244,13 @@ class TelemetryGUI:
 
         robot_two_goal = ttk.Frame(coordination_frame)
         robot_two_goal.pack(fill=tk.X, pady=(0, 6))
+
         ttk.Label(robot_two_goal, text="Goal row").grid(row=0, column=0, sticky="w")
         self.grid_robot_two_row_var = tk.StringVar(value="20")
-        ttk.Entry(robot_two_goal, textvariable=self.grid_robot_two_row_var, width=6).grid(row=0, column=1, padx=(6, 12), sticky="w")
+        ttk.Entry(robot_two_goal, textvariable=self.grid_robot_two_row_var, width=6).grid(row=0, column=1, padx=(6, 12))
         ttk.Label(robot_two_goal, text="Goal col").grid(row=0, column=2, sticky="w")
         self.grid_robot_two_col_var = tk.StringVar(value="20")
-        ttk.Entry(robot_two_goal, textvariable=self.grid_robot_two_col_var, width=6).grid(row=0, column=3, padx=(6, 0), sticky="w")
+        ttk.Entry(robot_two_goal, textvariable=self.grid_robot_two_col_var, width=6).grid(row=0, column=3, padx=(6, 0))
 
         self.grid_plan_summary_var = tk.StringVar(value="Select two robots and set destination cells (0-39).")
         ttk.Label(
@@ -241,7 +265,7 @@ class TelemetryGUI:
             text="Start Two-Robot Traverse",
             command=self._send_two_robot_traverse,
         ).pack(fill=tk.X, pady=2)
-    
+
     def _get_robot_color(self, robot_id: str) -> str:
         if robot_id not in self.robot_colors:
             self.robot_colors[robot_id] = next(self.color_cycle)

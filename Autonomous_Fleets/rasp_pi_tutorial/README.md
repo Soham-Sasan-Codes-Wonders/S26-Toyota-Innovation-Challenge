@@ -4,49 +4,37 @@ You have the option to run the client code on your local computer or on the Rasp
 ## Usage Description: 
 The raspberry pi essentially replaces your laptop to plug into the PRIZM controller. It will run the same client.py code that you would run on your laptop. It also enables for local processing on the pi, such as computer vision processing through a camera module. For a documentation of useful computer vision for the robot, click [here].
 
-**TL, DR for running**: launch central-arbiter.py in your computer, client.py on the raspberry pi, and prizm firmware on the prizm controller. The raspberry pi will communicate with the prizm controller through a USB cable, and communicate with your computer through wifi.
+**TL, DR for running**: launch central-arbiter.py in your computer, client.py on the raspberry pi, and prizm firmware on the prizm controller. The raspberry pi will communicate with the prizm controller through a USB cable, and communicate with your computer through the network.
 
 ## Note:
-- Please **speak to a co-op student or a TA** if you are interested in controlling one or more of your robots with Raspberry Pi. They need to provide you with the raspberry pi, credentials to use the pi, and hardware to mount the pi on the robot. Note **inventory is limited**, so please reach out early if you are interested in using the raspberry pi.
+- Please **speak to a co-op student or a TA** if you are interested in controlling one or more of your robots with Raspberry Pi. They need to provide you with the raspberry pi, credentials to use the pi, a generated authentication key, and hardware to mount the pi on the robot. Note **inventory is limited**, so please reach out early if you are interested in using the raspberry pi.
 
-- you will also be on an alternate network to allow direct IP pinging. Ensure you obtain credential for the network as well. 
+- You will also be on an alternate network to allow direct IP pinging. Ensure you obtain credential for the network as well.
 
 - After obtaining the raspberry pi and its kits, the steps below are for setting up the "sync" between your local computer and the Raspberry Pi. This allows you to edit code on your local computer and have it automatically update on the Raspberry Pi, which is much more convenient than editing code directly on the Pi.
 
+## Setting Up Tailscale:
+1. Download Tailscale by going to the following website: https://tailscale.com/docs/install/windows
+2. Activate auth key with `tailscale up --auth-key=tskey-auth-your-key-here`. If needed, use `sudo`.
+3. By doing `tailscale status`, you can see the other nodes on the server. You will see your Pi connnected to the server; if the Pi is disconnected, **get a TA**
+4. SSH into your Pi:
+    - The Pi Provided to you should have a piece of paper with the following information: IP adderess, username, and password
+    - Open a terminal (either through VS code or your computer's own terminal) and type `ssh (username)@(IP address)` (replace with the actual username and IP address provided to you)
+    - If prompted, enter the password. 
+  For example:
+    ```bash
+    ~ tailscale up --auth-key=tskey-auth-k123e657fgyhuoji68t79huionji76fy8gu
+    ~ tailscale up         //do this if tailscale status returns an error
+    ~ tailscale status
 
-## Setting Up the "Sync"
+    100.Your.Ip.Address   YourLaptop       skaushik@  windows  -
+    100.Your.Pi.Ip        ideasclinicpi#   skaushik@  linux    -
 
-1. Install: Search for the SFTP extension in VS Code (the one by Natizyskane is popular) and install it.
-<img src="sftp.png" width="50%" alt="Description">
+   ~ ssh (username)@(IP address)
+    ```
+    -  You should now be logged into the Pi through the terminal.
 
-2. Initialize: Press Ctrl + Shift + P and type SFTP: Config.
-3. Configure: Your .vscode/sftp.json. Paste the following code into that file.
-```json
-{
-    "name": "Robot-Pi-Sync", // Name of the connection
-    "host": "10.37.x.x", // Your Pi's IP
-    "protocol": "sftp",
-    "port": 22,
-    "username": "pi",
-    "remotePath": "/home/pi/YourProjectFolder",// The folder on the Pi where you want to sync your code
-    "uploadOnSave": true,
-    "ignore": [
-        ".vscode",
-        ".git",
-        ".env" 
-    ]
-}
-```
-
-4. SSH into your Pi to complete your sftp setup: 
-    1. The Pi Provided to you should have a piece of paper with the following information: 
-        - IP address 
-        - username 
-        - password 
-    2. replace the "host", "username" fields in the sftp.json file with the actual information provided to you.
-    3. Open a terminal (either through VS code or your computer's own terminal) and type `ssh (username)@(IP address)` (replace with the actual username and IP address provided to you). For example, if the username is "pi" and the IP address is "12.34.56.78", you would type `ssh pi@12.34.56.78`.
-    4. You will be prompted to enter the password. Enter the password provided to you. You should now be logged into the Pi through the terminal.
-    5. now you can setup a folder that your code will live in.
+5. Now you can setup a folder that your code will live in.
     ```bash
     # 1. Navigate to the home directory (the safest place for code)
         cd ~
@@ -55,9 +43,33 @@ The raspberry pi essentially replaces your laptop to plug into the PRIZM control
     # 3. Enter that folder
         cd robot_project
     ```
-    6. Now, update the "remotePath" field in your sftp.json file to match the path of the folder you just created. simply copy the path shown in your terminal (after you cd into the folder) and paste it into the "remotePath" field. For example, if your terminal shows that you are in `"/home/pi/robot_project"`, then your "remotePath" should be `"/home/pi/robot_project"`. Ensure the quotes around the path are preserved when you paste it in, and forward slash.
 
-5. ctrl+s in the json file to save the sftp information 
+## Setting Up the "Sync"
+1. Install: Search for the SFTP extension in VS Code (the one by Natizyskane is popular) and install it.
+<img src="sftp.png" width="50%" alt="Description">
+
+2. Initialize: Press Ctrl + Shift + P and type SFTP: Config.
+3. Configure: Your .vscode/sftp.json. Paste the following code into that file.
+```json
+{
+    "name": "Robot-Pi-Sync", // Name of the connection 
+    "host": "10.37.x.x", // Your Pi's IP (given on paper)
+    "protocol": "sftp",
+    "port": 22,
+    "username": "XX", //Pi username (given on paper)
+    "remotePath": "/home/pi/robot_project", //The folder on the Pi where you want to sync your code
+    "uploadOnSave": true,
+    "ignore": [
+        ".vscode",
+        ".git",
+        ".env" 
+    ]
+}
+```
+4. Replace the "host", "username" fields in the sftp.json file with the actual information provided to you.
+5. Now, update the "remotePath" field in your sftp.json file to match the path of the folder you just created. simply copy the path shown in your terminal (after you cd into the folder) and paste it into the "remotePath" field. For example, if your terminal shows that you are in `"/home/pi/robot_project"`, then your "remotePath" should be `"/home/pi/robot_project"`. Ensure the quotes around the path are preserved when you paste it in, and forward slash.
+
+6. ctrl+s in the json file to save the sftp information 
 
 ## Prepare for syncing
 Be sure you are SSHed into the Pi through the terminal before proceeding with the steps below. 
@@ -154,4 +166,20 @@ Summary of common commands:
 | **Check Pi Temp** | `vcgencmd measure_temp` |
 | **Monitor Serial Data** | `arduino-cli monitor -p /dev/ttyUSB0 -s 115200` |
 
+## 5. Configure Correct Ports 
+The connection between devices is now setup as such:
+
+Laptop -> Rasp Pi (through Tailscale network)
+
+Rasp Pi -> PRIZM (through USB serial)
+
+The system was initially configured for communication with a local Windows laptop. To run it using Raspberry Pi OS and Tailscale, update the `.env` file and device settings as follows
+
+- On the **laptop running `central-arbiter.py`**, retrieve its Tailscale IP:
+     - `tailscale ip -4`. This will return your device IP address, for e.x. 100.12.345.67. Input this into SERVER_HOST_IP_ADDRESS
+    
+- Ensure USE_WIFI_BRIDGE=false
+  
+- On Raspberry Pi OS, USB serial devices typically appear as: `/dev/ttyUSB#` and not `COM#`
+    - So change LOCAL_SERIAL_PORT="/dev/ttyUSB0" to reflect the serial port that is connected to the PRIZM
 
