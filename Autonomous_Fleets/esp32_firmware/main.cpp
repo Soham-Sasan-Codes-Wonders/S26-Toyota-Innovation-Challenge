@@ -1,10 +1,20 @@
+//Copy this into an arduino sketch OR open in Platform io 
+//ensure the wifi credentials are in the same folder
+
 #include <WiFi.h>
 #include "env.h"
+
+//For the ESP32 Dev Module or ESP32C6 Dev Module
 
 // ===== UART to PRIZM =====
 HardwareSerial PRIZM(2);
 #define RXD2 4
 #define TXD2 13
+
+//Uncomment for ESP32C6 dev module (the esp32 with a usbc)
+// HardwareSerial PRIZM(1);
+// #define RXD1 4
+// #define TXD1 5
 
 // ===== TCP Server =====
 WiFiServer server(81);
