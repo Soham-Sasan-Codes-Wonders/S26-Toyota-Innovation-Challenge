@@ -126,60 +126,135 @@ def phase_detect_plates():
 # be aware your target maynot be red, and they may not be rectangular! You will need to modify the detection logic to fit your specific use case.
 # ---------------------------------------------------------
 def phase_detect_targets():
-    print("\n[PHASE 2] Scanning for targets. Waiting for stability...")
+    print("\n[PHASE 2] Scanning for targets. Waiting for stability... (press B to capture background, 1-9 to select)")
     stability_counter = 0
     last_count = 0
-    
+
+    # size thresholds (pixels area)
+    MIN_OBJECT_AREA = 200
+    MAX_OBJECT_AREA = 800
+
+    # background subtraction params
+    BG_FRAMES = 10
+    BG_THRESHOLD = 30
+    bg_captured = False
+    bg_gray = None
+
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    kernel = np.ones((5, 5), np.uint8)
+
     while True:
         ret, frame = cap.read()
-        if not ret: continue
-        
+        if not ret:
+            time.sleep(0.01)
+            continue
+
         frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
-        # Create a display copy so drawings don't affect next frame's HSV detection
         display_frame = frame.copy()
-        
-        # Red Tag Logic
-        hsv = cv2.cvtColor(cv2.GaussianBlur(frame, (3,3), 0), cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, np.array([0,120,70]), np.array([10,255,255])) + \
-               cv2.inRange(hsv, np.array([170,120,70]), np.array([180,255,255]))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        current_list = []
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        clahe_img = clahe.apply(gray)
+
+        # adaptive threshold to capture objects of differing brightness
+        thresh = cv2.adaptiveThreshold(clahe_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                       cv2.THRESH_BINARY_INV, 11, 2)
+
+        # color cue (keep red detection as a strong hint)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        red_mask = cv2.inRange(hsv, np.array([0, 100, 70]), np.array([10, 255, 255]))
+        red_mask = cv2.bitwise_or(red_mask, cv2.inRange(hsv, np.array([170, 100, 70]), np.array([180, 255, 255])))
+        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        # edge cue (use Canny to find object outlines)
+        edges = cv2.Canny(clahe_img, 50, 150)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+
+        # background subtraction if captured
+        bg_mask = None
+        if bg_captured and bg_gray is not None:
+            diff = cv2.absdiff(clahe_img, bg_gray)
+            _, bg_mask = cv2.threshold(diff, BG_THRESHOLD, 255, cv2.THRESH_BINARY)
+            bg_mask = cv2.morphologyEx(bg_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+        # fuse cues
+        combined = thresh
+        combined = cv2.bitwise_or(combined, red_mask)
+        combined = cv2.bitwise_or(combined, edges)
+        if bg_mask is not None:
+            combined = cv2.bitwise_or(combined, bg_mask)
+
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        detected = []
         for cnt in contours:
-            if cv2.contourArea(cnt) > 200:
-                M = cv2.moments(cnt)
-                if M["m00"] != 0:
-                    cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
-                    rx, ry = pixel_to_robot(cx, cy, H_matrix)
-                    current_list.append((rx, ry))
-                    # Draw on display_frame only
-                    cv2.drawContours(display_frame, [cnt], -1, (0, 255, 0), 2)
-                    
-        cv2.waitKey(1)
+            area = cv2.contourArea(cnt)
+            if area < MIN_OBJECT_AREA or area > MAX_OBJECT_AREA:
+                continue
+            M = cv2.moments(cnt)
+            if M.get("m00", 0) == 0:
+                continue
+            cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+            rx, ry = pixel_to_robot(cx, cy, H_matrix)
+            detected.append({"robot": (rx, ry), "pixel": (cx, cy), "area": area, "contour": cnt})
 
-        # --- STABILITY LOGIC ---
-        if len(current_list) != 0:
-            if len(current_list) > 0 and len(current_list) == last_count:
-                stability_counter += 1
-            else:
-                stability_counter = 0
-                last_count = len(current_list)
+        # Draw detected objects with numbers
+        for i, obj in enumerate(detected):
+            cnt = obj["contour"]
+            cx, cy = obj["pixel"]
+            cv2.drawContours(display_frame, [cnt], -1, (0, 255, 0), 2)
+            cv2.putText(display_frame, str(i + 1), (cx + 10, cy + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
 
-        # Visual Feedback
-        progress = int((stability_counter / STABILITY_LIMIT) * 100)
-        color = (0, 255, 0) if progress < 100 else (255, 255, 0)
-        
-        cv2.putText(display_frame, f"LOCKING TARGETS: {progress}%", (20, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        status_text = f"BG: {'yes' if bg_captured else 'no (press B)'} | Press 1-9 to select object, E to abort"
+        cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+        cv2.putText(display_frame, f"Detected: {len(detected)}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+
         cv2.imshow("Detection", display_frame)
-        
-        # --- EXIT CONDITION ---
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('b'):
+            # capture a median background from several frames
+            frames = []
+            for _ in range(BG_FRAMES):
+                r2, f2 = cap.read()
+                if not r2:
+                    continue
+                f2 = cv2.remap(f2, map1, map2, cv2.INTER_LINEAR)
+                frames.append(cv2.cvtColor(f2, cv2.COLOR_BGR2GRAY))
+                cv2.waitKey(30)
+            if len(frames) > 0:
+                bg_gray = np.median(np.stack(frames, axis=0), axis=0).astype(np.uint8)
+                bg_gray = clahe.apply(bg_gray)
+                bg_captured = True
+                print("Background captured for subtraction")
+            continue
+
+        if key == ord('e'):
+            print("User aborted target selection.")
+            return []
+
+        # number key selection (1-9)
+        if ord('1') <= key <= ord('9'):
+            idx = key - ord('1')
+            if idx < len(detected):
+                sel = detected[idx]
+                rx, ry = sel["robot"]
+                print(f"User selected object #{idx+1} (area={sel['area']:.0f}) at pixel={sel['pixel']}")
+                return [(rx, ry)]
+
+        # Stability lock if no selection
+        if len(detected) > 0 and len(detected) == last_count:
+            stability_counter += 1
+        else:
+            stability_counter = 0
+            last_count = len(detected)
+
+        progress = int((stability_counter / STABILITY_LIMIT) * 100)
         if stability_counter >= STABILITY_LIMIT:
-            print(f"[SUCCESS] Locked {len(current_list)} targets.")
-            #cv2.waitKey(500) # Brief pause so you can see the 100%
-    
-            return current_list
+            print(f"[SUCCESS] Locked {len(detected)} targets.")
+            picks = [(o["robot"][0], o["robot"][1]) for o in detected]
+            return picks
 
 
 # ---------------------------------------------------------
