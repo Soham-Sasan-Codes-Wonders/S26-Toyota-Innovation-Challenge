@@ -29,7 +29,8 @@ This guide shows how to set up hand sign recognition using Google's Teachable Ma
 2. Select **"TensorFlow.js"**
 3. Check **"Upload (cloud)"** (easier) or **"Offline"** (works without internet)
 4. Copy the model URL or download the files
-5. If using cloud upload, you'll get a URL like:
+6. There is no separate "model number" to enter. Use the exported URL provided by Teachable Machine.
+7. If using cloud upload, you'll get a URL like:
    ```
    https://teachablemachine.withgoogle.com/models/YOUR_MODEL_ID/
    ```

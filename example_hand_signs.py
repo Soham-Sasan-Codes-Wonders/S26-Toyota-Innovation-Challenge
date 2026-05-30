@@ -21,9 +21,10 @@ import dobotArm
 # CONFIGURATION
 # ========================================
 
-# Your Teachable Machine model URL
-# Replace with your actual model URL from Teachable Machine
-MODEL_URL = "https://teachablemachine.withgoogle.com/models/YOUR_MODEL_ID/"
+# Your Teachable Machine model folder
+# Replace with the local folder path inside Collaborative_Robotics
+# Example: tm-my-image-model
+MODEL_PATH = "tm-my-image-model"
 
 # Confidence threshold (0-1)
 CONFIDENCE_THRESHOLD = 0.7
@@ -53,7 +54,7 @@ def main():
     # Initialize hand sign recognizer
     print("\nInitializing hand sign recognizer...")
     recognizer = HandSignRecognizer(
-        MODEL_URL, 
+        MODEL_PATH, 
         camera_id=0, 
         confidence_threshold=CONFIDENCE_THRESHOLD
     )
@@ -91,7 +92,7 @@ def example_with_robot():
     Uncomment and modify as needed for your use case.
     """
     # Initialize recognizer
-    recognizer = HandSignRecognizer(MODEL_URL, camera_id=0)
+    recognizer = HandSignRecognizer(MODEL_PATH, camera_id=0)
 
     # Initialize robot (only if you want robot control)
     # api = dType.load()

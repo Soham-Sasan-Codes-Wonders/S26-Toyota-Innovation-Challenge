@@ -13,7 +13,6 @@ Requires:
 
 import cv2
 import numpy as np
-import urllib.request
 import json
 import time
 import os
@@ -31,22 +30,22 @@ class HandSignRecognizer:
     Recognizes hand signs using a Teachable Machine pose model.
     
     Example:
-        >>> model_url = "https://teachablemachine.withgoogle.com/models/YOUR_MODEL_ID/"
-        >>> recognizer = HandSignRecognizer(model_url, camera_id=0)
+        >>> model_path = "tm-my-image-model"
+        >>> recognizer = HandSignRecognizer(model_path, camera_id=0)
         >>> recognizer.run()
     """
 
-    def __init__(self, model_url, camera_id=0, confidence_threshold=0.5):
+    def __init__(self, model_path, camera_id=0, confidence_threshold=0.5):
         """
         Initialize the hand sign recognizer.
 
         Args:
-            model_url (str): URL to Teachable Machine model
-                            e.g., "https://teachablemachine.withgoogle.com/models/xyz/"
+            model_path (str): Local folder containing Teachable Machine files
+                              (metadata.json, model.json, weights.bin)
             camera_id (int): Camera device ID (default 0)
             confidence_threshold (float): Confidence threshold for predictions (0-1)
         """
-        self.model_url = model_url.rstrip("/")
+        self.model_path = model_path.rstrip("/\\")
         self.camera_id = camera_id
         self.confidence_threshold = confidence_threshold
         self.camera = None
@@ -62,45 +61,60 @@ class HandSignRecognizer:
         self._init_camera()
 
     def _load_model(self):
-        """Download and load the Teachable Machine model."""
-        print(f"Loading model from {self.model_url}...")
+        """Load the Teachable Machine model from a local folder."""
+        print(f"Loading model from {self.model_path}...")
 
-        try:
-            # Download model.json to get metadata and class names
-            metadata_url = f"{self.model_url}metadata.json"
-            with urllib.request.urlopen(metadata_url) as response:
-                self.metadata = json.loads(response.read())
+        model_dir = self.model_path
+        model_json_path = self.model_path
 
-            # Extract class names
-            if "labels" in self.metadata:
-                self.class_names = self.metadata["labels"]
-            else:
-                # Fallback: use generic names
-                self.class_names = [f"Sign_{i}" for i in range(len(self.metadata.get("classes", [])))]
+        if os.path.isdir(self.model_path):
+            model_dir = self.model_path
+            metadata_path = os.path.join(model_dir, "metadata.json")
+            model_json_path = os.path.join(model_dir, "model.json")
+        elif os.path.isfile(self.model_path) and self.model_path.endswith("model.json"):
+            model_dir = os.path.dirname(self.model_path)
+            metadata_path = os.path.join(model_dir, "metadata.json")
+            model_json_path = self.model_path
+        else:
+            raise ValueError(
+                "Model path must be a local folder containing metadata.json and model.json, "
+                f"or a direct path to model.json. Got: {self.model_path}"
+            )
 
+        if not os.path.exists(model_json_path):
+            raise FileNotFoundError(f"Could not find model.json at {model_json_path}")
+
+        if os.path.exists(metadata_path):
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                self.metadata = json.load(f)
+        else:
+            self.metadata = {}
+
+        if "labels" in self.metadata:
+            self.class_names = self.metadata["labels"]
+        else:
+            self.class_names = [f"Sign_{i}" for i in range(len(self.metadata.get("classes", [])))]
+
+        if self.class_names:
             print(f"Classes found: {self.class_names}")
+        else:
+            print("No class labels found in metadata; using generic labels.")
 
-            # Try to load as Keras model first
-            model_json_url = f"{self.model_url}model.json"
-            print(f"Attempting to load model from {model_json_url}...")
+        print(f"Attempting to load TensorFlow.js model from {model_json_path}...")
+        self._load_tfjs_model(model_json_path)
 
-            # For Teachable Machine, we need to use TensorFlow.js and convert
-            # For simplicity, we'll use the model through a web request
-            self._load_tfjs_model()
+    def _load_tfjs_model(self, model_json_path):
+        """Load a local TensorFlow.js model saved by Teachable Machine."""
+        try:
+            from tensorflowjs.converters import load_keras_model
+        except ImportError as e:
+            raise ImportError(
+                "tensorflowjs is required to load local Teachable Machine models. "
+                "Install it with: pip install tensorflowjs"
+            ) from e
 
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Make sure your model URL is correct and ends with a /")
-            raise
-
-    def _load_tfjs_model(self):
-        """Load TensorFlow.js model converted to TensorFlow SavedModel format."""
-        # For Teachable Machine models, we use tfjs_graph_converter
-        print("Note: For best results, export your model as TensorFlow SavedModel from Teachable Machine")
-        print("Alternatively, use the model.json URL with tfjs2tf or run inference via the TensorFlow.js API")
-
-        # Placeholder: In production, you would convert the TFJS model or use a wrapper
-        self.model = self._create_placeholder_model()
+        self.model = load_keras_model(model_json_path)
+        print("TensorFlow.js model loaded successfully.")
 
     def _create_placeholder_model(self):
         """Create a simple placeholder model for demonstration."""

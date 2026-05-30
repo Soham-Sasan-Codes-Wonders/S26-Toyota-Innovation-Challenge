@@ -37,7 +37,7 @@ pip install tensorflow opencv-python numpy requests
 2. Select **"TensorFlow.js"**
 3. Choose **"Upload (Cloud)"** (easier)
 4. Copy the model URL
-
+> There is no separate "model number" to enter. The Teachable Machine export page gives you a URL that contains the model identifier.
 Example URL:
 ```
 https://teachablemachine.withgoogle.com/models/abc123xyz/
