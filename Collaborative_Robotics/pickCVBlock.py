@@ -31,6 +31,8 @@ Z_SAFE = 40 #what is the clearance distance for the robot arm to avoid collision
 Z_PICK = -25 #what is the  height for the robot claw to successfully pick up the target?
 STABILITY_LIMIT = 60  #how many consecutive frames of stable detection before we "lock in" the positions and move to the next phase? (at 30fps, 60 frames is about 2 seconds)
 PIXEL_TOLERANCE = 10  #object can move at most this # of pixels to be considered stationary
+EXIT_KEY = 27   # ESC to stop
+RESTART_KEY = 32  # SPACE to restart after a job
 
 machine_state = "scanning plate" 
 
@@ -83,39 +85,68 @@ def next_state():
 def phase_detect_plates():
     print("\n[PHASE 1] Scanning for drop zones. Waiting for stability...")
     stability_counter = 0
-    last_count = 0
+    last_positions = []
     
     while True:
         ret, frame = cap.read()
+        if not ret: continue
         frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
         display_frame = frame.copy()
         
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.medianBlur(gray, 7)
-        circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 150, param1=100, param2=35, minRadius=15, maxRadius=55)
+        # Increased blur to reduce edge noise that throws off HoughCircles
+        blurred = cv2.medianBlur(gray, 9)
+        
+        # Adjusted radii and accumulator threshold for better reliability
+        circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, dp=1, minDist=150, 
+                                   param1=100, param2=30, minRadius=20, maxRadius=45)
 
         current_list = []
+        current_pixels = []
         if circles is not None:
             circles = np.uint16(np.around(circles))
             for i in circles[0, :]:
-                cv2.circle(display_frame, (i[0], i[1]), i[2], (0, 255, 0), 2)
-                rx, ry = pixel_to_robot(i[0], i[1], H_matrix)
+                cx, cy, r = i[0], i[1], i[2]
+                # Draw the circumference and the center
+                cv2.circle(display_frame, (cx, cy), r, (0, 255, 0), 2)
+                cv2.circle(display_frame, (cx, cy), 2, (0, 0, 255), 3)
+                
+                rx, ry = pixel_to_robot(cx, cy, H_matrix)
                 current_list.append((rx, ry))
+                current_pixels.append((cx, cy))
 
-        # --- AUTO-LOCK LOGIC ---
-        if len(current_list) > 0 and len(current_list) == last_count:
-            stability_counter += 1
+        # --- AUTO-LOCK LOGIC WITH POSITIONAL STABILITY ---
+        if len(current_pixels) > 0 and len(current_pixels) == len(last_positions):
+            # Sort roughly by X axis to pair up corresponding circles between frames
+            current_pixels.sort(key=lambda p: p[0])
+            last_positions.sort(key=lambda p: p[0])
+            
+            is_stable = True
+            for p1, p2 in zip(current_pixels, last_positions):
+                dist = np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+                if dist > PIXEL_TOLERANCE:
+                    is_stable = False
+                    break
+                    
+            if is_stable:
+                stability_counter += 1
+            else:
+                stability_counter = 0
         else:
             stability_counter = 0
-            last_count = len(current_list)
+            
+        last_positions = current_pixels.copy()
 
         progress = int((stability_counter / STABILITY_LIMIT) * 100)
-        cv2.putText(display_frame, f"LOCKING PLATES: {progress}%", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        color = (0, 255, 0) if progress < 100 else (255, 255, 0)
+        cv2.putText(display_frame, f"LOCKING PLATES: {progress}%", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
         cv2.imshow("Detection", display_frame)
-        cv2.waitKey(1)
+        key = cv2.waitKey(1) & 0xFF
+        if key == EXIT_KEY:
+            return None
 
         if stability_counter >= STABILITY_LIMIT:
-            print(f"Locked {len(current_list)} plates.")
+            print(f"[SUCCESS] Locked {len(current_list)} plates.")
             return current_list
   
  
@@ -170,15 +201,16 @@ def phase_detect_targets():
         progress = int((stability_counter / STABILITY_LIMIT) * 100)
         color = (0, 255, 0) if progress < 100 else (255, 255, 0)
         
-        cv2.putText(display_frame, f"LOCKING TARGETS: {progress}%", (20, 40), 
+        
+        cv2.putText(display_frame, f"LOCKING TARGETS: {progress}%", (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
         cv2.imshow("Detection", display_frame)
-        
-        # --- EXIT CONDITION ---
+        key = cv2.waitKey(1) & 0xFF
+        if key == EXIT_KEY:
+            return None
+
         if stability_counter >= STABILITY_LIMIT:
             print(f"[SUCCESS] Locked {len(current_list)} targets.")
-            #cv2.waitKey(500) # Brief pause so you can see the 100%
-    
             return current_list
 
 
@@ -189,7 +221,6 @@ def phase_detect_targets():
 # Do you need collision avoidance? Think about if the robot gripper accidentally hits the plate or other parts on the way to the target, what would happen? How would you modify the robot's movement logic to avoid collisions?
 # ---------------------------------------------------------
 def phase_execute_batch(api, pick_list, drop_list):
-    cv2.VideoCapture(0)
     time.sleep(0.5)
     
     if len(pick_list) == 0 or len(drop_list) == 0:
@@ -250,24 +281,40 @@ dobotArm.initialize_robot(api)
 dobotArm.open_gripper(api)
 dobotArm.stop_pump(api)
 
-while machine_state == "scanning plate":
+running = True
+print("Press ESC in the detection window to stop. After a job completes press SPACE to restart.")
+
+while running:
+    # PHASE 1: detect drop zones
+    machine_state = "scanning plate"
     drop_zone = phase_detect_plates()
-    if drop_zone is not None:
-        next_state()
+    if drop_zone is None:
+        print("Exit requested during plate detection.")
+        break
 
-
-while machine_state == "scanning target":
+    # PHASE 2: detect targets
+    machine_state = "scanning target"
     pick_target = phase_detect_targets()
-    if pick_target is not None:
-        next_state()
+    if pick_target is None:
+        print("Exit requested during target detection.")
+        break
 
-
-while machine_state == "pick place":
+    # PHASE 3: execute pick/place
+    machine_state = "pick place"
     completed = phase_execute_batch(api, pick_target, drop_zone)
-    if completed:
-        next_state()
-    else: break
+    if not completed:
+        print("Batch aborted.")
+        break
 
+    # Wait for user to either restart or exit
+    print("\nBatch complete. Press SPACE to start next job, or ESC to exit.")
+    while True:
+        key = cv2.waitKey(0) & 0xFF
+        if key == EXIT_KEY:
+            running = False
+            break
+        if key == RESTART_KEY:
+            break
 
 cap.release()
 cv2.destroyAllWindows()
