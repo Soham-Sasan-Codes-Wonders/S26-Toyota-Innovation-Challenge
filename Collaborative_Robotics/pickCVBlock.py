@@ -22,6 +22,7 @@ import lib.DobotDllType as dType
 import numpy as np
 import cv2
 import time
+from pathlib import Path
 
 
 """CONSTANTS"""
@@ -37,8 +38,10 @@ machine_state = "scanning plate"
 # MAKE SURE THAT YOU HAVE RAN calibrateCamera.py FIRST TO GENERATE THE camera_params.npz FILE
 api = dType.load()
 cap = cv2.VideoCapture(0)
-H_matrix = np.load("HomographyMatrix.npy")
-data = np.load("./camera_params.npz")
+# Resolve data files relative to this script's directory
+_HERE = Path(__file__).resolve().parent
+H_matrix = np.load(_HERE / "HomographyMatrix.npy")
+data = np.load(_HERE / "camera_params.npz")
 camera_matrix = data["camera_matrix"]
 dist_coeffs   = data["dist_coeffs"]
 
@@ -89,7 +92,7 @@ def phase_detect_plates():
         
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blurred = cv2.medianBlur(gray, 7)
-        circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 150, param1=100, param2=35, minRadius=25, maxRadius=55)
+        circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, 1, 150, param1=100, param2=35, minRadius=15, maxRadius=55)
 
         current_list = []
         if circles is not None:
@@ -144,7 +147,7 @@ def phase_detect_targets():
 
         current_list = []
         for cnt in contours:
-            if cv2.contourArea(cnt) > 800:
+            if cv2.contourArea(cnt) > 200:
                 M = cv2.moments(cnt)
                 if M["m00"] != 0:
                     cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
