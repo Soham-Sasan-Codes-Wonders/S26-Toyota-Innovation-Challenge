@@ -185,13 +185,14 @@ def pixel_to_robot(u, v, H):
 
 
 class HandSignChannel(threading.Thread):
-    def __init__(self, model_url, camera_id=1, confidence_threshold=0.7, pause_sign="Flat Hand", resume_sign="Thumbs Up"):
+    def __init__(self, model_url, camera_id=1, confidence_threshold=0.7, pause_sign="Flat Hand", resume_sign="Thumbs Up", show_debug=False):
         super().__init__(daemon=True)
         self.model_url = model_url
         self.camera_id = camera_id
         self.confidence_threshold = confidence_threshold
         self.pause_sign = pause_sign.lower()
         self.resume_sign = resume_sign.lower()
+        self.show_debug = show_debug
         self.current_sign = None
         self.current_confidence = 0.0
         self.pause_requested = False
@@ -201,6 +202,7 @@ class HandSignChannel(threading.Thread):
         self._lock = threading.Lock()
 
         if self.model_url:
+            # HandSignRecognizer.detect_once() returns (name, confidence, frame) for the MediaPipe implementation
             self.recognizer = HandSignRecognizer(model_url, camera_id=self.camera_id, confidence_threshold=self.confidence_threshold)
             self.ready = True
         else:
@@ -212,7 +214,20 @@ class HandSignChannel(threading.Thread):
         self.running = True
         print(f"[HAND] Hand sign channel started on camera {self.camera_id}")
         while self.running:
-            sign, conf = self.recognizer.detect_once()
+            # detect_once may return (sign, conf, frame) or (sign, conf)
+            try:
+                res = self.recognizer.detect_once()
+            except Exception:
+                res = (None, 0.0, None)
+
+            if isinstance(res, tuple) and len(res) == 3:
+                sign, conf, dbg_frame = res
+            elif isinstance(res, tuple) and len(res) == 2:
+                sign, conf = res
+                dbg_frame = None
+            else:
+                sign, conf, dbg_frame = None, 0.0, None
+
             with self._lock:
                 self.current_sign = sign
                 self.current_confidence = conf
@@ -224,10 +239,24 @@ class HandSignChannel(threading.Thread):
                     elif self.resume_sign in label:
                         self.resume_requested = True
                         self.pause_requested = False
+
+            # show debug window for this channel if requested
+            if self.show_debug and dbg_frame is not None:
+                try:
+                    cv2.imshow('Hand Sign (Channel)', dbg_frame)
+                    cv2.waitKey(1)
+                except Exception:
+                    pass
+
             time.sleep(0.1)
 
     def stop(self):
         self.running = False
+        if self.show_debug:
+            try:
+                cv2.destroyWindow('Hand Sign (Channel)')
+            except Exception:
+                pass
 
     def get_status(self):
         with self._lock:
@@ -633,14 +662,14 @@ def phase_detect_targets():
                 if not sel.get('locked', False):
                     print(f"Selection #{idx+1} ignored: object not locked yet ({sel.get('lock_counter',0)}/{args.stability_lock_frames})")
                 else:
-                    rx, ry = sel['robot']
-                    print(f"User selected object #{idx+1} (area={sel['area']:.0f}) at pixel={sel['pixel']}")
-                    return [(rx, ry)]
+                        print(f"User selected object #{idx+1} (area={sel['area']:.0f}) at pixel={sel['pixel']}")
+                        # return the full track dict so downstream code has both pixel and robot info
+                        return [sel]
 
         # auto-return when all stable tracks are locked
         if len(stable_tracks) > 0 and all([t.get('locked', False) for t in stable_tracks]):
-            picks = [(t['robot'][0], t['robot'][1]) for t in stable_tracks]
-            print(f"[AUTO] Locked {len(picks)} targets: {picks}")
+            picks = [t for t in stable_tracks]
+            print(f"[AUTO] Locked {len(picks)} targets: {[t.get('robot') for t in picks]}")
             return picks
 
         frame_idx += 1
@@ -753,6 +782,7 @@ if args.hand_model_url:
             confidence_threshold=args.hand_confidence,
             pause_sign=args.hand_pause_sign,
             resume_sign=args.hand_resume_sign,
+            show_debug=args.debug_windows,
         )
         hand_channel.start()
     except Exception as e:
