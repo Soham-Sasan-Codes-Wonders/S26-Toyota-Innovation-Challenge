@@ -19,6 +19,27 @@ try:
     import mediapipe as mp
 except ImportError:
     raise ImportError("MediaPipe is required. Install with: pip install mediapipe opencv-python")
+import importlib
+
+# Try to import the 'solutions' submodule in a few ways to be compatible
+# with different mediapipe package layouts / deprecations.
+mp_solutions = None
+try:
+    # preferred: top-level import
+    from mediapipe import solutions as mp_solutions
+except Exception:
+    try:
+        # fallback: mediapipe.python.solutions
+        mp_solutions = importlib.import_module("mediapipe.python.solutions")
+    except Exception:
+        mp_solutions = None
+
+if mp_solutions is None:
+    # final attempt: if mediapipe exposes 'solutions' as attribute on mp
+    mp_solutions = getattr(mp, 'solutions', None)
+
+if mp_solutions is None:
+    raise ImportError("Could not import MediaPipe 'solutions' module. Ensure mediapipe is installed and up-to-date.")
 
 
 class HandSignRecognizer:
@@ -48,8 +69,8 @@ class HandSignRecognizer:
         self.map2 = None
 
         self.class_names = ["Thumbs Up", "Open Hand"]
-        self.mp_hands = mp.solutions.hands
-        self.mp_drawing = mp.solutions.drawing_utils
+        self.mp_hands = mp_solutions.hands
+        self.mp_drawing = mp_solutions.drawing_utils
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
@@ -229,17 +250,7 @@ class HandSignRecognizer:
         finally:
             self.close()
 
-    def close(self):
-        """Close the camera and cleanup OpenCV windows."""
-        if self.camera:
-            self.camera.release()
-        cv2.destroyAllWindows()
-        elapsed = time.time() - fps_time
-        fps = 30 / elapsed
-        print(f"\nFPS: {fps:.1f}")
-        fps_time = time.time()
-
-        
+    
     def close(self):
         """Release camera and close windows."""
         if self.camera:
