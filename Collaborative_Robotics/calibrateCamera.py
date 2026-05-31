@@ -32,7 +32,8 @@ def calibrate(camera_index: int = CAMERA_INDEX):
     detector_params = cv2.aruco.DetectorParameters()
     detector_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
     detector_params.cornerRefinementWinSize = 5
-    detector_params.cornerRefinementMaxIterations = 30
+    detector_params.cornerRefinementMaxItera
+    tions = 30
     detector_params.cornerRefinementMinAccuracy = 0.001
     # extra robustness for varying lighting/angles
     detector_params.adaptiveThreshWinSizeMin = 3
