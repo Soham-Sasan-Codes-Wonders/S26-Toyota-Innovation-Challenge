@@ -23,7 +23,12 @@ import lib.DobotDllType as dType
 import numpy as np
 import cv2
 import time
+import threading
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from hand_sign_recognition import HandSignRecognizer
 
 
 """CONSTANTS"""
@@ -40,6 +45,11 @@ machine_state = "scanning plate"
 # --- CLI and INITIALIZATION FOR CAMERA TRANSFORMATION ---
 parser = argparse.ArgumentParser(description="pickCVBlock with improved detection options")
 parser.add_argument("--camera", type=int, default=0, help="Webcam index (default 0)")
+parser.add_argument("--hand-camera", type=int, default=1, help="Camera index for hand sign detection channel")
+parser.add_argument("--hand-model-url", type=str, default="", help="Teachable Machine model URL for hand sign detection")
+parser.add_argument("--hand-confidence", type=float, default=0.7, help="Confidence threshold for hand sign recognition")
+parser.add_argument("--hand-pause-sign", type=str, default="Flat Hand", help="Hand sign name that pauses robot motion")
+parser.add_argument("--hand-resume-sign", type=str, default="Thumbs Up", help="Hand sign name that resumes robot motion")
 parser.add_argument("--no-edges", action="store_true", help="Disable edge/Canny cue")
 parser.add_argument("--no-clahe", action="store_true", help="Disable CLAHE (use raw grayscale)")
 parser.add_argument("--no-red", action="store_true", help="Disable red-color cue")
@@ -94,6 +104,87 @@ def pixel_to_robot(u, v, H):
     xy = H @ p
     xy /= xy[2]
     return xy[0], xy[1]
+
+
+class HandSignChannel(threading.Thread):
+    def __init__(self, model_url, camera_id=1, confidence_threshold=0.7, pause_sign="Flat Hand", resume_sign="Thumbs Up"):
+        super().__init__(daemon=True)
+        self.model_url = model_url
+        self.camera_id = camera_id
+        self.confidence_threshold = confidence_threshold
+        self.pause_sign = pause_sign.lower()
+        self.resume_sign = resume_sign.lower()
+        self.current_sign = None
+        self.current_confidence = 0.0
+        self.pause_requested = False
+        self.resume_requested = False
+        self.running = False
+        self.ready = False
+        self._lock = threading.Lock()
+
+        if self.model_url:
+            self.recognizer = HandSignRecognizer(model_url, camera_id=self.camera_id, confidence_threshold=self.confidence_threshold)
+            self.ready = True
+        else:
+            self.recognizer = None
+
+    def run(self):
+        if not self.ready:
+            return
+        self.running = True
+        print(f"[HAND] Hand sign channel started on camera {self.camera_id}")
+        while self.running:
+            sign, conf = self.recognizer.detect_once()
+            with self._lock:
+                self.current_sign = sign
+                self.current_confidence = conf
+                if sign and conf >= self.confidence_threshold:
+                    label = sign.lower()
+                    if self.pause_sign in label:
+                        self.pause_requested = True
+                        self.resume_requested = False
+                    elif self.resume_sign in label:
+                        self.resume_requested = True
+                        self.pause_requested = False
+            time.sleep(0.1)
+
+    def stop(self):
+        self.running = False
+
+    def get_status(self):
+        with self._lock:
+            return {
+                'sign': self.current_sign,
+                'confidence': self.current_confidence,
+                'pause_requested': self.pause_requested,
+                'resume_requested': self.resume_requested,
+            }
+
+    def clear_requests(self):
+        with self._lock:
+            self.pause_requested = False
+            self.resume_requested = False
+
+
+def handle_hand_pause(api, hand_channel):
+    if hand_channel is None:
+        return False
+    status = hand_channel.get_status()
+    if not status['pause_requested']:
+        return False
+    try:
+        dType.SetQueuedCmdStopExec(api)
+    except Exception:
+        pass
+    print("[HAND] Flat hand detected. Robot paused until resume sign appears.")
+    while hand_channel.running:
+        status = hand_channel.get_status()
+        if status['resume_requested']:
+            print("[HAND] Resume sign detected. Continuing operation.")
+            hand_channel.clear_requests()
+            return True
+        time.sleep(0.2)
+    return False
 
 
 # State machine logic to control the flow of the program through the three phases: scanning for plates, scanning for targets, and executing pick/place operations.
@@ -553,6 +644,24 @@ def flush_key_buffer():
 # MAIN EXECUTION
 # contains an oversimplified state machine that runs the three phases sequentially. You can modify the logic to fit your specific use case.
 # ---------------------------------------------------------
+hand_channel = None
+if args.hand_model_url:
+    try:
+        hand_channel = HandSignChannel(
+            args.hand_model_url,
+            camera_id=args.hand_camera,
+            confidence_threshold=args.hand_confidence,
+            pause_sign=args.hand_pause_sign,
+            resume_sign=args.hand_resume_sign,
+        )
+        hand_channel.start()
+    except Exception as e:
+        print(f"[HAND] Failed to start hand sign channel: {e}")
+
+if hand_channel is None:
+    print("[HAND] Hand sign channel disabled. Run with --hand-model-url to enable.")
+
+# robot initialization
 dobotArm.initialize_robot(api)
 dobotArm.open_gripper(api)
 dobotArm.stop_pump(api)
@@ -561,6 +670,9 @@ running = True
 print("Press ESC in the detection window to stop. After a job completes press SPACE to restart.")
 
 while running:
+    if hand_channel is not None:
+        handle_hand_pause(api, hand_channel)
+
     # PHASE 1: detect drop zones
     machine_state = "scanning plate"
     drop_zone = phase_detect_plates()
@@ -627,6 +739,8 @@ while running:
             else:
                 drop_list = [remaining_drops[0]] * len(to_pick) if remaining_drops else []
 
+            if hand_channel is not None:
+                handle_hand_pause(api, hand_channel)
             completed = phase_execute_batch(api, to_pick, drop_list)
             dobotArm.move_to_home(api)
             if not completed:
@@ -662,6 +776,8 @@ while running:
             drop_item = [remaining_drops[0]] if remaining_drops else []
 
         # execute single pick
+        if hand_channel is not None:
+            handle_hand_pause(api, hand_channel)
         completed = phase_execute_batch(api, pick_item, drop_item)
         dobotArm.move_to_home(api)
         if not completed:
