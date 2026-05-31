@@ -416,7 +416,7 @@ def phase_detect_targets():
             else:
                 cv2.putText(display_frame, f"Lock:{lock_progress}%", (cx + 10, cy + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 200), 2)
 
-        status_text = f"BG: {'yes' if bg_captured else 'no (press B)'} | Press 1-9 to select object, E to abort"
+        status_text = f"BG: {'yes' if bg_captured else 'no (press B)'} | Press 1-9 to select object, Esc to abort"
         cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
         cv2.putText(display_frame, f"Detected: {len(stable_tracks)}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
@@ -544,6 +544,11 @@ def phase_execute_batch(api, pick_list, drop_list):
     return True
  
 
+def flush_key_buffer():
+    # Clear a few pending key events so confirmation waits for a fresh keypress.
+    for _ in range(10):
+        cv2.waitKey(1)
+
 # ---------------------------------------------------------
 # MAIN EXECUTION
 # contains an oversimplified state machine that runs the three phases sequentially. You can modify the logic to fit your specific use case.
@@ -570,12 +575,103 @@ while running:
         print("Exit requested during target detection.")
         break
 
-    # PHASE 3: execute pick/place
+    # If no targets found, pause and let user choose to continue or exit
+    if len(pick_target) == 0:
+        print("No targets identified. Press SPACE to continue scanning, or ESC to exit.")
+        flush_key_buffer()
+        while True:
+            key = cv2.waitKey(0) & 0xFF
+            if key == EXIT_KEY:
+                running = False
+                break
+            if key == RESTART_KEY:
+                # User chose to continue scanning
+                break
+        if not running:
+            break
+        else:
+            continue
+
+    # PHASE 3: interactive pick loop: allow selecting from initial detections
     machine_state = "pick place"
-    completed = phase_execute_batch(api, pick_target, drop_zone)
-    if not completed:
-        print("Batch aborted.")
-        break
+    initial_picks = pick_target[:]
+    initial_drops = drop_zone[:]
+    remaining_picks = initial_picks[:]
+    remaining_drops = initial_drops[:]
+    one_to_one = (len(initial_drops) == len(initial_picks))
+
+    print(f"Detected picks: {initial_picks}. Enter interactive pick loop.")
+    flush_key_buffer()
+
+    while len(remaining_picks) > 0:
+        # show quick summary
+        print("Remaining picks:")
+        for i, p in enumerate(remaining_picks):
+            print(f"  {i+1}: {p}")
+        if len(remaining_picks) == 1:
+            print("Press SPACE to execute the remaining pick, or ESC to cancel and re-scan.")
+        else:
+            print(f"Press 1-{min(9,len(remaining_picks))} to select an item, SPACE to pick the first, 'a' to pick all, or ESC to cancel and re-scan.")
+
+        key = cv2.waitKey(0) & 0xFF
+        if key == EXIT_KEY:
+            print("User aborted interactive pick loop. Returning to scan.")
+            break
+        if key == ord('a'):
+            # Execute all remaining picks in one batch
+            to_pick = remaining_picks[:]
+            if one_to_one:
+                drop_list = remaining_drops[:len(to_pick)]
+            elif len(remaining_drops) == 1:
+                drop_list = [remaining_drops[0]] * len(to_pick)
+            else:
+                drop_list = [remaining_drops[0]] * len(to_pick) if remaining_drops else []
+
+            completed = phase_execute_batch(api, to_pick, drop_list)
+            dobotArm.move_to_home(api)
+            if not completed:
+                print("Batch aborted.")
+            remaining_picks = []
+            break
+
+        # map SPACE to picking the first remaining
+        if key == RESTART_KEY:
+            idx = 0
+        elif ord('1') <= key <= ord('9'):
+            idx = key - ord('1')
+            if idx >= len(remaining_picks):
+                print("Invalid selection index.")
+                continue
+        else:
+            # unhandled key, continue loop
+            continue
+
+        # prepare single-item lists for execution
+        pick_item = [remaining_picks[idx]]
+        if one_to_one and idx < len(remaining_drops):
+            drop_item = [remaining_drops[idx]]
+            # remove corresponding drop once used
+            if len(initial_drops) > 1:
+                del remaining_drops[idx]
+        elif len(remaining_drops) == 1:
+            drop_item = [remaining_drops[0]]
+        elif idx < len(remaining_drops):
+            drop_item = [remaining_drops[idx]]
+            del remaining_drops[idx]
+        else:
+            drop_item = [remaining_drops[0]] if remaining_drops else []
+
+        # execute single pick
+        completed = phase_execute_batch(api, pick_item, drop_item)
+        dobotArm.move_to_home(api)
+        if not completed:
+            print("Batch aborted during execution.")
+            break
+
+        # remove the executed pick from the remaining list
+        del remaining_picks[idx]
+
+    # finished interactive loop; continue outer main loop (re-scan)
 
     # Wait for user to either restart or exit
     print("\nBatch complete. Press SPACE to start next job, or ESC to exit.")
