@@ -416,9 +416,11 @@ def phase_detect_targets():
             else:
                 cv2.putText(display_frame, f"Lock:{lock_progress}%", (cx + 10, cy + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 200), 2)
 
-        status_text = f"BG: {'yes' if bg_captured else 'no (press B)'} | Press 1-9 to select object, Esc to abort"
+        status_text = f"BG: {'yes' if bg_captured else 'no (press B)'} | Press 1-9 to select object, Esc to abort,"
+        status_text2 = f"{"Space to continue, A to select all."}"
         cv2.putText(display_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
-        cv2.putText(display_frame, f"Detected: {len(stable_tracks)}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+        cv2.putText(display_frame, status_text2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+        cv2.putText(display_frame, f"Detected: {len(stable_tracks)}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
         if args.debug_windows:
             cv2.imshow('CLAHE' if clahe is not None else 'Gray', clahe_img)
