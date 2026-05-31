@@ -1,33 +1,35 @@
-# Hand Training with Thumbs Up & Flat Hand Gestures
+# Hand Training with Thumbs Up & Open Hand Gestures
 
-This script implements interactive hand gesture recognition for training and control with **optional Dobot robot integration**:
+This script implements interactive hand gesture recognition using MediaPipe Hands with **optional Dobot robot integration**:
 - **Thumbs Up** 👍 = Continue/Start Training (Resume robot motion)
-- **Flat Hand** ✋ = Stop/Pause Training (Pause robot motion)
+- **Open Hand** ✋ = Stop/Pause Training (Pause robot motion)
 
 ## 🚀 Quick Setup
 
-### Step 1: Train Your Model in Teachable Machine
+### Step 1: Install dependencies
 
-1. Go to [teachablemachine.withgoogle.com](https://teachablemachine.withgoogle.com/)
-2. Click **"Get Started"**
-3. Select **"Pose"** project type (important!)
-4. Sign in with Google
-5. Create a new project
+1. Install the Python dependencies:
+   ```bash
+   pip install mediapipe opencv-python numpy
+   ```
+2. Connect a webcam and make sure it is available as camera ID 0.
+3. Run the script:
+   ```bash
+   python hand_training.py
+   ```
 
-### Step 2: Add Two Classes
+### Step 2: Perform gestures
 
-Create exactly these two classes:
+Use two gestures for control:
 
-#### Class 1: "Thumbs Up"
-- Make a thumbs up gesture with your hand
-- Click **"Hold"** to record 20-30 samples
-- Move your hand around at different angles and distances
-- Include variations: different arms, positions, speeds
+#### Gesture 1: "Thumbs Up"
+- Raise your thumb upward while folding the other fingers.
+- Use this gesture to resume or continue the robot/task.
 
-#### Class 2: "Flat Hand"
-- Extend your hand flat/open (like a stop gesture)
-- Click **"Hold"** to record 20-30 samples
-- Vary the angles, distances, and hand orientations
+#### Gesture 2: "Open Hand"
+- Hold your hand flat and open toward the camera.
+- Use this gesture to pause the robot/task.
+
 - Capture different speeds of the gesture
 
 ### Step 3: Train the Model

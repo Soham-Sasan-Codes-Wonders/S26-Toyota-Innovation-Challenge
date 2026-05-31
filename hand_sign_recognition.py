@@ -1,117 +1,116 @@
 """
-Hand Sign Recognition using Teachable Machine
+Hand Sign Recognition using MediaPipe Hands
 
-This module loads a Teachable Machine pose model and performs real-time
-hand sign recognition using a webcam or calibrated camera.
+This module performs real-time hand gesture recognition using MediaPipe Hands.
+It recognizes two robot-safe control gestures:
+    - Thumbs Up: resume / continue
+    - Open Hand: stop / pause
 
 Requires:
-    - tensorflow>=2.10
+    - mediapipe
     - numpy
     - opencv-python
-    - requests
 """
 
 import cv2
 import numpy as np
-import urllib.request
-import json
-import time
-import os
-from pathlib import Path
 
 try:
-    import tensorflow as tf
-    from tensorflow import keras
+    import mediapipe as mp
 except ImportError:
-    raise ImportError("TensorFlow is required. Install with: pip install tensorflow")
+    raise ImportError("MediaPipe is required. Install with: pip install mediapipe opencv-python")
 
 
 class HandSignRecognizer:
     """
-    Recognizes hand signs using a Teachable Machine pose model.
-    
+    Recognizes simple hand control gestures using MediaPipe Hands.
+
     Example:
-        >>> model_url = "https://teachablemachine.withgoogle.com/models/YOUR_MODEL_ID/"
-        >>> recognizer = HandSignRecognizer(model_url, camera_id=0)
+        >>> recognizer = HandSignRecognizer(camera_id=0)
         >>> recognizer.run()
     """
 
-    def __init__(self, model_url, camera_id=0, confidence_threshold=0.5):
+    def __init__(self, model_url=None, camera_id=0, confidence_threshold=0.5):
         """
         Initialize the hand sign recognizer.
 
         Args:
-            model_url (str): URL to Teachable Machine model
-                            e.g., "https://teachablemachine.withgoogle.com/models/xyz/"
+            model_url (str): Optional compatibility parameter. Ignored when using MediaPipe.
             camera_id (int): Camera device ID (default 0)
-            confidence_threshold (float): Confidence threshold for predictions (0-1)
+            confidence_threshold (float): Minimum confidence for gesture output
         """
-        self.model_url = model_url.rstrip("/")
         self.camera_id = camera_id
         self.confidence_threshold = confidence_threshold
         self.camera = None
-        self.model = None
-        self.metadata = None
-        self.class_names = []
         self.camera_matrix = None
         self.dist_coeffs = None
         self.map1 = None
         self.map2 = None
 
-        self._load_model()
+        self.class_names = ["Thumbs Up", "Open Hand"]
+        self.mp_hands = mp.solutions.hands
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.6,
+            min_tracking_confidence=0.6,
+        )
+
         self._init_camera()
 
-    def _load_model(self):
-        """Download and load the Teachable Machine model."""
-        print(f"Loading model from {self.model_url}...")
+    def _init_camera(self):
+        """Initialize the camera."""
+        self.camera = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
+        if not self.camera.isOpened():
+            raise RuntimeError(f"Failed to open camera {self.camera_id}")
+        print(f"Camera {self.camera_id} opened successfully")
 
-        try:
-            # Download model.json to get metadata and class names
-            metadata_url = f"{self.model_url}metadata.json"
-            with urllib.request.urlopen(metadata_url) as response:
-                self.metadata = json.loads(response.read())
+    def _pixel_coordinates(self, landmark, image_width, image_height):
+        return np.array([landmark.x * image_width, landmark.y * image_height])
 
-            # Extract class names
-            if "labels" in self.metadata:
-                self.class_names = self.metadata["labels"]
-            else:
-                # Fallback: use generic names
-                self.class_names = [f"Sign_{i}" for i in range(len(self.metadata.get("classes", [])))]
+    def _is_finger_extended(self, tip, pip, image_height):
+        return tip[1] < pip[1] - max(10, image_height * 0.02)
 
-            print(f"Classes found: {self.class_names}")
+    def _is_thumb_up(self, landmarks, image_width, image_height):
+        thumb_tip = self._pixel_coordinates(landmarks[4], image_width, image_height)
+        thumb_ip = self._pixel_coordinates(landmarks[3], image_width, image_height)
+        return thumb_tip[1] < thumb_ip[1] - max(10, image_height * 0.02)
 
-            # Try to load as Keras model first
-            model_json_url = f"{self.model_url}model.json"
-            print(f"Attempting to load model from {model_json_url}...")
+    def _classify_gesture(self, hand_landmarks, image_shape, handedness_label=None):
+        image_height, image_width = image_shape[:2]
+        landmarks = hand_landmarks.landmark
 
-            # For Teachable Machine, we need to use TensorFlow.js and convert
-            # For simplicity, we'll use the model through a web request
-            self._load_tfjs_model()
+        index_extended = self._is_finger_extended(
+            self._pixel_coordinates(landmarks[8], image_width, image_height),
+            self._pixel_coordinates(landmarks[6], image_width, image_height),
+            image_height,
+        )
+        middle_extended = self._is_finger_extended(
+            self._pixel_coordinates(landmarks[12], image_width, image_height),
+            self._pixel_coordinates(landmarks[10], image_width, image_height),
+            image_height,
+        )
+        ring_extended = self._is_finger_extended(
+            self._pixel_coordinates(landmarks[16], image_width, image_height),
+            self._pixel_coordinates(landmarks[14], image_width, image_height),
+            image_height,
+        )
+        pinky_extended = self._is_finger_extended(
+            self._pixel_coordinates(landmarks[20], image_width, image_height),
+            self._pixel_coordinates(landmarks[18], image_width, image_height),
+            image_height,
+        )
 
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Make sure your model URL is correct and ends with a /")
-            raise
+        thumb_up = self._is_thumb_up(landmarks, image_width, image_height)
 
-    def _load_tfjs_model(self):
-        """Load TensorFlow.js model converted to TensorFlow SavedModel format."""
-        # For Teachable Machine models, we use tfjs_graph_converter
-        print("Note: For best results, export your model as TensorFlow SavedModel from Teachable Machine")
-        print("Alternatively, use the model.json URL with tfjs2tf or run inference via the TensorFlow.js API")
+        if thumb_up and not any([index_extended, middle_extended, ring_extended, pinky_extended]):
+            return "Thumbs Up", 0.95
 
-        # Placeholder: In production, you would convert the TFJS model or use a wrapper
-        self.model = self._create_placeholder_model()
+        if all([index_extended, middle_extended, ring_extended, pinky_extended]):
+            return "Open Hand", 0.95
 
-    def _create_placeholder_model(self):
-        """Create a simple placeholder model for demonstration."""
-        # This is a placeholder. In production, load the actual Teachable Machine model
-        # For now, return a mock model that simulates predictions
-        class PlaceholderModel:
-            def predict(self, x):
-                # Return random predictions for demo
-                return np.random.rand(1, 4)
-
-        return PlaceholderModel()
+        return None, 0.0
 
     def set_calibration(self, camera_matrix, dist_coeffs):
         """
@@ -124,11 +123,10 @@ class HandSignRecognizer:
         self.camera_matrix = camera_matrix
         self.dist_coeffs = dist_coeffs
 
-        # Precompute undistortion maps
         ret, frame = self.camera.read()
         if ret:
             h, w = frame.shape[:2]
-            new_K, roi = cv2.getOptimalNewCameraMatrix(
+            new_K, _ = cv2.getOptimalNewCameraMatrix(
                 camera_matrix, dist_coeffs, (w, h), 1
             )
             self.map1, self.map2 = cv2.initUndistortRectifyMap(
@@ -136,48 +134,44 @@ class HandSignRecognizer:
             )
             print("Camera calibration applied")
 
-    def _init_camera(self):
-        """Initialize the camera."""
-        self.camera = cv2.VideoCapture(self.camera_id)
-        if not self.camera.isOpened():
-            raise RuntimeError(f"Failed to open camera {self.camera_id}")
-        print(f"Camera {self.camera_id} opened successfully")
-
     def detect_once(self):
         """
         Capture one frame and detect hand signs once.
 
         Returns:
-            tuple: (class_name, confidence) or (None, 0.0) if below threshold
+            tuple: (class_name, confidence, frame)
         """
         ret, frame = self.camera.read()
         if not ret:
-            return None, 0.0
+            return None, 0.0, None
 
-        # Undistort if calibration is available
         if self.map1 is not None:
             frame = cv2.remap(frame, self.map1, self.map2, cv2.INTER_LINEAR)
 
-        # Prepare frame for model
-        input_data = cv2.resize(frame, (224, 224))
-        input_data = np.expand_dims(input_data, axis=0).astype(np.float32) / 255.0
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(rgb)
 
-        # Run inference
-        predictions = self.model.predict(input_data, verbose=0)[0]
+        gesture_name = None
+        confidence = 0.0
 
-        # Get top prediction
-        top_idx = np.argmax(predictions)
-        top_conf = float(predictions[top_idx])
+        if results.multi_hand_landmarks:
+            hand_landmarks = results.multi_hand_landmarks[0]
+            handedness_label = None
+            if results.multi_handedness:
+                handedness_label = results.multi_handedness[0].classification[0].label
 
-        if top_conf >= self.confidence_threshold:
-            class_name = (
-                self.class_names[top_idx]
-                if top_idx < len(self.class_names)
-                else f"Unknown_{top_idx}"
+            gesture_name, confidence = self._classify_gesture(
+                hand_landmarks, frame.shape, handedness_label
             )
-            return class_name, top_conf
-        else:
-            return None, top_conf
+            self.mp_drawing.draw_landmarks(
+                frame,
+                hand_landmarks,
+                self.mp_hands.HAND_CONNECTIONS,
+                self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
+                self.mp_drawing.DrawingSpec(color=(0, 128, 255), thickness=2),
+            )
+
+        return gesture_name, confidence, frame
 
     def run(self, display=True):
         """
@@ -189,75 +183,57 @@ class HandSignRecognizer:
         print("Starting hand sign recognition. Press 'q' to quit.")
         print(f"Classes: {self.class_names}")
 
-        frame_count = 0
-        fps_time = time.time()
-
         try:
             while True:
-                ret, frame = self.camera.read()
-                if not ret:
+                gesture_name, confidence, frame = self.detect_once()
+                if frame is None:
                     break
 
-                # Undistort if calibration is available
-                if self.map1 is not None:
-                    frame = cv2.remap(frame, self.map1, self.map2, cv2.INTER_LINEAR)
-
-                # Prepare frame for model
-                input_data = cv2.resize(frame, (224, 224))
-                input_data = (
-                    np.expand_dims(input_data, axis=0).astype(np.float32) / 255.0
-                )
-
-                # Run inference
-                predictions = self.model.predict(input_data, verbose=0)[0]
-
-                # Get top prediction
-                top_idx = np.argmax(predictions)
-                top_conf = float(predictions[top_idx])
-
-                class_name = (
-                    self.class_names[top_idx]
-                    if top_idx < len(self.class_names)
-                    else f"Unknown_{top_idx}"
-                )
-
-                # Print result
                 status = (
-                    f"✓ {class_name}: {top_conf:.2%}"
-                    if top_conf >= self.confidence_threshold
-                    else f"  {class_name}: {top_conf:.2%} (below threshold)"
+                    f"✓ {gesture_name}: {confidence:.1%}"
+                    if gesture_name and confidence >= self.confidence_threshold
+                    else "No valid gesture detected"
                 )
                 print(status, end="\r")
 
-                # Display
                 if display:
                     display_frame = frame.copy()
-
-                    # Draw detection info
-                    color = (0, 255, 0) if top_conf >= self.confidence_threshold else (0, 0, 255)
+                    label = gesture_name if gesture_name else "Waiting for gesture..."
+                    color = (0, 255, 0) if gesture_name else (0, 0, 255)
                     cv2.putText(
                         display_frame,
-                        f"{class_name}: {top_conf:.1%}",
+                        label,
                         (30, 60),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1.2,
                         color,
                         2,
                     )
-
-                    # Draw confidence bars for all classes
-                    bar_height = 30
-                    for i, (name, conf) in enumerate(zip(self.class_names, predictions)):
-                        y = 120 + i * (bar_height + 10)
-                        bar_width = int(conf * 400)
-                        cv2.rectangle(display_frame, (30, y), (30 + bar_width, y + bar_height), (100, 200, 100), -1)
-                        cv2.putText(display_frame, f"{name}: {conf:.1%}", (40, y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
+                    if gesture_name:
+                        cv2.putText(
+                            display_frame,
+                            f"Confidence: {confidence:.1%}",
+                            (30, 100),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.9,
+                            color,
+                            2,
+                        )
                     cv2.imshow("Hand Sign Recognition", display_frame)
 
-                # Calculate FPS
-                frame_count += 1
-                if frame_count % 30 == 0:
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.close()
+
+    def close(self):
+        """Close the camera and cleanup OpenCV windows."""
+        if self.camera:
+            self.camera.release()
+        cv2.destroyAllWindows()
                     elapsed = time.time() - fps_time
                     fps = 30 / elapsed
                     print(f"\nFPS: {fps:.1f}")

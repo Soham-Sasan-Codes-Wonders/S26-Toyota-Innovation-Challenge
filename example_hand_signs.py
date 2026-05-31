@@ -1,13 +1,12 @@
 """
 Example: Hand Sign Recognition with Calibrated Camera
 
-This script demonstrates how to use hand sign recognition 
-with the Dobot's calibrated camera.
+This script demonstrates how to use hand sign recognition with MediaPipe Hands
+and the Dobot calibrated camera.
 
 Usage:
-    1. First, train and export a Teachable Machine pose model
-    2. Replace MODEL_URL with your model's URL
-    3. Run this script
+    1. Install MediaPipe, OpenCV, and NumPy
+    2. Run this script
 """
 
 import numpy as np
@@ -20,10 +19,6 @@ import dobotArm
 # ========================================
 # CONFIGURATION
 # ========================================
-
-# Your Teachable Machine model URL
-# Replace with your actual model URL from Teachable Machine
-MODEL_URL = "https://teachablemachine.withgoogle.com/models/YOUR_MODEL_ID/"
 
 # Confidence threshold (0-1)
 CONFIDENCE_THRESHOLD = 0.7
@@ -53,9 +48,8 @@ def main():
     # Initialize hand sign recognizer
     print("\nInitializing hand sign recognizer...")
     recognizer = HandSignRecognizer(
-        MODEL_URL, 
-        camera_id=0, 
-        confidence_threshold=CONFIDENCE_THRESHOLD
+        camera_id=0,
+        confidence_threshold=CONFIDENCE_THRESHOLD,
     )
 
     # Apply calibration if available
@@ -91,7 +85,7 @@ def example_with_robot():
     Uncomment and modify as needed for your use case.
     """
     # Initialize recognizer
-    recognizer = HandSignRecognizer(MODEL_URL, camera_id=0)
+    recognizer = HandSignRecognizer(camera_id=0)
 
     # Initialize robot (only if you want robot control)
     # api = dType.load()
@@ -112,7 +106,7 @@ def example_with_robot():
 
     frame_count = 0
     while frame_count < 300:  # Run for ~10 seconds at 30 FPS
-        sign, confidence = recognizer.detect_once()
+        sign, confidence, _ = recognizer.detect_once()
 
         if sign and sign in gesture_to_action:
             print(f"\n[{frame_count}] Recognized: {sign} ({confidence:.1%})")
