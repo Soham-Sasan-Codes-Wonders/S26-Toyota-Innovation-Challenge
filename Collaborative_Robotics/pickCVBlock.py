@@ -140,10 +140,14 @@ def phase_detect_plates():
         progress = int((stability_counter / STABILITY_LIMIT) * 100)
         color = (0, 255, 0) if progress < 100 else (255, 255, 0)
         cv2.putText(display_frame, f"LOCKING PLATES: {progress}%", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        cv2.putText(display_frame, "SPACE: restart   ESC: exit", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
         cv2.imshow("Detection", display_frame)
         key = cv2.waitKey(1) & 0xFF
         if key == EXIT_KEY:
             return None
+        if key == RESTART_KEY:
+            stability_counter = 0
+            last_positions = []
 
         if stability_counter >= STABILITY_LIMIT:
             print(f"[SUCCESS] Locked {len(current_list)} plates.")
@@ -204,10 +208,14 @@ def phase_detect_targets():
         
         cv2.putText(display_frame, f"LOCKING TARGETS: {progress}%", (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        cv2.putText(display_frame, "SPACE: restart   ESC: exit", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
         cv2.imshow("Detection", display_frame)
         key = cv2.waitKey(1) & 0xFF
         if key == EXIT_KEY:
             return None
+        if key == RESTART_KEY:
+            stability_counter = 0
+            last_count = 0
 
         if stability_counter >= STABILITY_LIMIT:
             print(f"[SUCCESS] Locked {len(current_list)} targets.")
