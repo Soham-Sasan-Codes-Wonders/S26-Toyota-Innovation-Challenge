@@ -14,32 +14,32 @@ Requires:
 
 import cv2
 import numpy as np
+import os
+import urllib.request
+import sys
+import ctypes
+
+# Fix for MediaPipe's Tasks API on Python 3.13 (Windows)
+if sys.platform == "win32":
+    _original_getattr = ctypes.CDLL.__getattr__
+    def _patched_getattr(self, name):
+        if name == "free":
+            try:
+                return _original_getattr(self, name)
+            except AttributeError:
+                try:
+                    return ctypes.cdll.ucrtbase.free
+                except Exception:
+                    pass
+        return _original_getattr(self, name)
+    ctypes.CDLL.__getattr__ = _patched_getattr
 
 try:
     import mediapipe as mp
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
 except ImportError:
     raise ImportError("MediaPipe is required. Install with: pip install mediapipe opencv-python")
-import importlib
-
-# Try to import the 'solutions' submodule in a few ways to be compatible
-# with different mediapipe package layouts / deprecations.
-mp_solutions = None
-try:
-    # preferred: top-level import
-    from mediapipe import solutions as mp_solutions
-except Exception:
-    try:
-        # fallback: mediapipe.python.solutions
-        mp_solutions = importlib.import_module("mediapipe.python.solutions")
-    except Exception:
-        mp_solutions = None
-
-if mp_solutions is None:
-    # final attempt: if mediapipe exposes 'solutions' as attribute on mp
-    mp_solutions = getattr(mp, 'solutions', None)
-
-if mp_solutions is None:
-    raise ImportError("Could not import MediaPipe 'solutions' module. Ensure mediapipe is installed and up-to-date.")
 
 
 class HandSignRecognizer:
@@ -68,17 +68,38 @@ class HandSignRecognizer:
         self.map1 = None
         self.map2 = None
 
-        self.class_names = ["Thumbs Up", "Open Hand"]
-        self.mp_hands = mp_solutions.hands
-        self.mp_drawing = mp_solutions.drawing_utils
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=0.6,
-            min_tracking_confidence=0.6,
-        )
+        self.class_names = ["Thumbs Up / Down", "Open Hand"]
+        self.hand_connections = [
+            (0, 1), (1, 2), (2, 3), (3, 4),
+            (0, 5), (5, 6), (6, 7), (7, 8),
+            (5, 9), (9, 10), (10, 11), (11, 12),
+            (9, 13), (13, 14), (14, 15), (15, 16),
+            (13, 17), (0, 17), (17, 18), (18, 19), (19, 20)
+        ]
+        self._init_detector()
 
-        self._init_camera()
+        if self.camera_id is not None:
+            self._init_camera()
+        else:
+            print("Camera initialized externally (shared mode).")
+
+    def _init_detector(self):
+        model_path = "hand_landmarker.task"
+        if not os.path.exists(model_path):
+            print("Downloading MediaPipe hand_landmarker.task model...")
+            url = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+            urllib.request.urlretrieve(url, model_path)
+            print("Download complete.")
+            
+        base_options = python.BaseOptions(model_asset_path=model_path)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            num_hands=1,
+            min_hand_detection_confidence=0.6,
+            min_hand_presence_confidence=0.6,
+            min_tracking_confidence=0.6
+        )
+        self.detector = vision.HandLandmarker.create_from_options(options)
 
     def _init_camera(self):
         """Initialize the camera."""
@@ -90,43 +111,48 @@ class HandSignRecognizer:
     def _pixel_coordinates(self, landmark, image_width, image_height):
         return np.array([landmark.x * image_width, landmark.y * image_height])
 
-    def _is_finger_extended(self, tip, pip, image_height):
-        return tip[1] < pip[1] - max(10, image_height * 0.02)
+    def _is_finger_extended(self, tip, pip, wrist):
+        return np.hypot(tip[0]-wrist[0], tip[1]-wrist[1]) > np.hypot(pip[0]-wrist[0], pip[1]-wrist[1])
 
-    def _is_thumb_up(self, landmarks, image_width, image_height):
-        thumb_tip = self._pixel_coordinates(landmarks[4], image_width, image_height)
-        thumb_ip = self._pixel_coordinates(landmarks[3], image_width, image_height)
-        return thumb_tip[1] < thumb_ip[1] - max(10, image_height * 0.02)
+    def _is_thumb_extended(self, thumb_tip, thumb_ip, pinky_base):
+        return np.hypot(thumb_tip[0]-pinky_base[0], thumb_tip[1]-pinky_base[1]) > np.hypot(thumb_ip[0]-pinky_base[0], thumb_ip[1]-pinky_base[1]) * 1.2
 
     def _classify_gesture(self, hand_landmarks, image_shape, handedness_label=None):
         image_height, image_width = image_shape[:2]
-        landmarks = hand_landmarks.landmark
+        landmarks = hand_landmarks
+        
+        wrist = self._pixel_coordinates(landmarks[0], image_width, image_height)
+        pinky_base = self._pixel_coordinates(landmarks[17], image_width, image_height)
 
         index_extended = self._is_finger_extended(
             self._pixel_coordinates(landmarks[8], image_width, image_height),
             self._pixel_coordinates(landmarks[6], image_width, image_height),
-            image_height,
+            wrist,
         )
         middle_extended = self._is_finger_extended(
             self._pixel_coordinates(landmarks[12], image_width, image_height),
             self._pixel_coordinates(landmarks[10], image_width, image_height),
-            image_height,
+            wrist,
         )
         ring_extended = self._is_finger_extended(
             self._pixel_coordinates(landmarks[16], image_width, image_height),
             self._pixel_coordinates(landmarks[14], image_width, image_height),
-            image_height,
+            wrist,
         )
         pinky_extended = self._is_finger_extended(
             self._pixel_coordinates(landmarks[20], image_width, image_height),
             self._pixel_coordinates(landmarks[18], image_width, image_height),
-            image_height,
+            wrist,
         )
 
-        thumb_up = self._is_thumb_up(landmarks, image_width, image_height)
+        thumb_ext = self._is_thumb_extended(
+            self._pixel_coordinates(landmarks[4], image_width, image_height),
+            self._pixel_coordinates(landmarks[3], image_width, image_height),
+            pinky_base,
+        )
 
-        if thumb_up and not any([index_extended, middle_extended, ring_extended, pinky_extended]):
-            return "Thumbs Up", 0.95
+        if thumb_ext and not any([index_extended, middle_extended, ring_extended, pinky_extended]):
+            return "Thumbs Up / Down", 0.95
 
         if all([index_extended, middle_extended, ring_extended, pinky_extended]):
             return "Open Hand", 0.95
@@ -155,6 +181,34 @@ class HandSignRecognizer:
             )
             print("Camera calibration applied")
 
+    def process_frame(self, frame):
+        """Process a single frame and return results."""
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        results = self.detector.detect(mp_image)
+
+        gesture_name = None
+        confidence = 0.0
+
+        if results.hand_landmarks:
+            hand_landmarks = results.hand_landmarks[0]
+            handedness_label = None
+            if results.handedness:
+                handedness_label = results.handedness[0][0].category_name
+
+            gesture_name, confidence = self._classify_gesture(
+                hand_landmarks, frame.shape, handedness_label
+            )
+            for connection in self.hand_connections:
+                start_pt = (int(hand_landmarks[connection[0]].x * frame.shape[1]), int(hand_landmarks[connection[0]].y * frame.shape[0]))
+                end_pt = (int(hand_landmarks[connection[1]].x * frame.shape[1]), int(hand_landmarks[connection[1]].y * frame.shape[0]))
+                cv2.line(frame, start_pt, end_pt, (0, 128, 255), 2)
+            for lm in hand_landmarks:
+                pt = (int(lm.x * frame.shape[1]), int(lm.y * frame.shape[0]))
+                cv2.circle(frame, pt, 2, (0, 255, 0), -1)
+
+        return gesture_name, confidence, frame
+
     def detect_once(self):
         """
         Capture one frame and detect hand signs once.
@@ -162,6 +216,9 @@ class HandSignRecognizer:
         Returns:
             tuple: (class_name, confidence, frame)
         """
+        if self.camera is None:
+            return None, 0.0, None
+            
         ret, frame = self.camera.read()
         if not ret:
             return None, 0.0, None
@@ -169,31 +226,7 @@ class HandSignRecognizer:
         if self.map1 is not None:
             frame = cv2.remap(frame, self.map1, self.map2, cv2.INTER_LINEAR)
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.hands.process(rgb)
-
-        gesture_name = None
-        confidence = 0.0
-
-        if results.multi_hand_landmarks:
-            hand_landmarks = results.multi_hand_landmarks[0]
-            handedness_label = None
-            if results.multi_handedness:
-                handedness_label = results.multi_handedness[0].classification[0].label
-
-            gesture_name, confidence = self._classify_gesture(
-                hand_landmarks, frame.shape, handedness_label
-            )
-            self.mp_drawing.draw_landmarks(
-                frame,
-                hand_landmarks,
-                self.mp_hands.HAND_CONNECTIONS,
-                self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                self.mp_drawing.DrawingSpec(color=(0, 128, 255), thickness=2),
-            )
-
-        return gesture_name, confidence, frame
-
+        return self.process_frame(frame)
     def run(self, display=True):
         """
         Run real-time hand sign detection.
@@ -253,6 +286,8 @@ class HandSignRecognizer:
     
     def close(self):
         """Release camera and close windows."""
+        if hasattr(self, 'detector') and self.detector is not None:
+            self.detector.close()
         if self.camera:
             self.camera.release()
         cv2.destroyAllWindows()
