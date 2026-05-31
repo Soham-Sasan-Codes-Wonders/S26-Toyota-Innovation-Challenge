@@ -74,6 +74,8 @@ parser.add_argument("--debug", action="store_true", help="Print debug info to co
 parser.add_argument("--overlay-mask", action="store_true", help="Draw translucent mask overlay on camera view")
 parser.add_argument("--overlay-alpha", type=float, default=0.5, help="Alpha for mask overlay (0.0-1.0)")
 parser.add_argument("--center-roi", type=float, default=0.60, help="Fraction of frame to restrict detection to center (0-1); 1.0 disables cropping")
+parser.add_argument("--enable-calibration-refinement", action="store_true", help="Enable continuous homography refinement")
+parser.add_argument("--refinement-rate", type=float, default=0.1, help="Calibration adjustment rate (0-1)")
 args = parser.parse_args()
 
 api = dType.load()
@@ -98,6 +100,82 @@ if not ret:
 h, w = frame.shape[:2]
 new_K, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (w,h), 1)
 map1, map2 = cv2.initUndistortRectifyMap(camera_matrix, dist_coeffs, None, new_K, (w,h), cv2.CV_16SC2)
+
+# Calibration refinement state
+calibration_errors = []
+max_error_history = 100
+
+
+def robot_to_pixel(rx, ry, H):
+    """Inverse of pixel_to_robot: convert robot coords to pixel coords."""
+    p = np.array([rx, ry, 1])
+    try:
+        H_inv = np.linalg.inv(H)
+        uv = H_inv @ p
+        uv /= uv[2]
+        return int(uv[0]), int(uv[1])
+    except np.linalg.LinAlgError:
+        return None, None
+
+
+def measure_calibration_error(pick_robot_x, pick_robot_y, pick_pixel_x, pick_pixel_y):
+    """
+    After a pick, verify if object was actually at predicted location.
+    Returns error magnitude (pixels).
+    """
+    # Convert predicted robot coords back to pixels using current matrix
+    pred_pixel_x, pred_pixel_y = robot_to_pixel(pick_robot_x, pick_robot_y, H_matrix)
+    
+    if pred_pixel_x is None:
+        return None
+    
+    # Calculate error between predicted and actual pixel location
+    error_magnitude = np.sqrt((pred_pixel_x - pick_pixel_x)**2 + (pred_pixel_y - pick_pixel_y)**2)
+    return error_magnitude
+
+
+def refine_homography(error_mag, pick_pixel_x, pick_pixel_y, pick_robot_x, pick_robot_y, alpha=0.1):
+    """
+    Adjust homography matrix based on observed calibration error.
+    Uses a simple gradient descent approach.
+    """
+    global H_matrix
+    
+    if error_mag is None or error_mag < 1.0:
+        return  # Error too small to warrant adjustment
+    
+    # Calculate the adjustment vector in pixel space
+    pred_pixel_x, pred_pixel_y = robot_to_pixel(pick_robot_x, pick_robot_y, H_matrix)
+    if pred_pixel_x is None:
+        return
+    
+    # Direction of error correction
+    dx = pick_pixel_x - pred_pixel_x
+    dy = pick_pixel_y - pred_pixel_y
+    
+    # Small adjustment to homography to reduce this error
+    # We adjust the matrix by minimizing the reprojection error
+    adjustment = np.array([
+        [1, 0, alpha * dx / max(1, error_mag)],
+        [0, 1, alpha * dy / max(1, error_mag)],
+        [0, 0, 1]
+    ])
+    
+    H_matrix = adjustment @ H_matrix
+    
+    # Normalize
+    H_matrix = H_matrix / H_matrix[2, 2]
+    print(f"[CALIB] Refined H_matrix (error={error_mag:.1f}px, rate={alpha})")
+
+
+def save_refined_calibration():
+    """Save refined homography and camera parameters to disk."""
+    try:
+        np.save(_HERE / "HomographyMatrix_refined.npy", H_matrix)
+        print(f"[CALIB] Saved refined HomographyMatrix to HomographyMatrix_refined.npy")
+    except Exception as e:
+        print(f"[CALIB] Failed to save refined calibration: {e}")
+
 
 def pixel_to_robot(u, v, H):
     p = np.array([u, v, 1])
@@ -594,10 +672,12 @@ def phase_execute_batch(api, pick_list, drop_list):
     print(f"\n[PHASE 3] Executing batch of {batch_size} operations.")
 
     for i in range(batch_size):
-        pick_x, pick_y = pick_list[i]
+        pick_entry = pick_list[i]
+        pick_x, pick_y = pick_entry['robot']
+        pick_pixel_x, pick_pixel_y = pick_entry.get('pixel', (None, None))
         drop_x, drop_y = drop_list[i]
 
-        print(f"Task {i+1}: Moving {pick_x, pick_y} to {drop_x, drop_y}")
+        print(f"Task {i+1}: Moving {pick_x:.1f}, {pick_y:.1f} to {drop_x:.1f}, {drop_y:.1f}")
 
         # --- PICK SEQUENCE ---
         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
@@ -608,6 +688,24 @@ def phase_execute_batch(api, pick_list, drop_list):
         dobotArm.close_gripper(api)
         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
 
+        # --- CALIBRATION REFINEMENT ---
+        if args.enable_calibration_refinement and pick_pixel_x is not None:
+            time.sleep(0.2)  # Let gripper settle
+            error_mag = measure_calibration_error(pick_x, pick_y, pick_pixel_x, pick_pixel_y)
+            if error_mag is not None:
+                calibration_errors.append(error_mag)
+                if len(calibration_errors) > max_error_history:
+                    calibration_errors.pop(0)
+                
+                avg_error = np.mean(calibration_errors) if calibration_errors else 0
+                print(f"[CALIB] Error: {error_mag:.1f}px, avg: {avg_error:.1f}px")
+                
+                refine_homography(error_mag, pick_pixel_x, pick_pixel_y, pick_x, pick_y, alpha=args.refinement_rate)
+                
+                # Save refined calibration every 10 picks
+                if len(calibration_errors) % 2 == 0:
+                    save_refined_calibration()
+
         # --- PLACE SEQUENCE ---
         dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
         dobotArm.open_gripper(api)
@@ -617,7 +715,9 @@ def phase_execute_batch(api, pick_list, drop_list):
     # irl, it is ok for 1 dish to contain multiple parts
     # if len(pick_list) > len(drop_list):
     #     for i in range(len(pick_list)):
-    #         pick_x, pick_y = pick_list[i]
+    #         pick_entry = pick_list[i]
+    #         pick_x, pick_y = pick_entry['robot']
+    #         pick_pixel_x, pick_pixel_y = pick_entry.get('pixel', (None, None))
     #         drop_x, drop_y = drop_list[0]
     #         # --- PICK SEQUENCE ---
     #         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
