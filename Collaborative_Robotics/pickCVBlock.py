@@ -188,14 +188,55 @@ def phase_detect_targets():
 # if you are picking up rigid car parts, would you still be able to move directly to the object and to the drop zone? 
 # Do you need collision avoidance? Think about if the robot gripper accidentally hits the plate or other parts on the way to the target, what would happen? How would you modify the robot's movement logic to avoid collisions?
 # ---------------------------------------------------------
+# Quick verification: map robot coords back to pixel to check if object remains after a pick
+# Tuning constants
+MAX_PICK_RETRIES = 3
+PIXEL_CHECK_THRESHOLD = 40  # pixels
+
+
+def quick_check_pick_present(pick_x, pick_y, frames=5):
+    # Return True if an object (red blob) is still present near the given robot xy.
+    try:
+        invH = np.linalg.inv(H_matrix)
+    except Exception:
+        return False
+    p = np.array([pick_x, pick_y, 1.0])
+    px = invH @ p
+    if px[2] == 0:
+        return False
+    u = int(round(px[0] / px[2]))
+    v = int(round(px[1] / px[2]))
+
+    for _ in range(frames):
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.05)
+            continue
+        frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, np.array([0,120,70]), np.array([10,255,255])) + \
+               cv2.inRange(hsv, np.array([170,120,70]), np.array([180,255,255]))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            if cv2.contourArea(cnt) < 200:
+                continue
+            M = cv2.moments(cnt)
+            if M.get('m00', 0) == 0:
+                continue
+            cx = int(M['m10'] / M['m00'])
+            cy = int(M['m01'] / M['m00'])
+            if np.hypot(cx - u, cy - v) <= PIXEL_CHECK_THRESHOLD:
+                return True
+    return False
+
+
 def phase_execute_batch(api, pick_list, drop_list):
-    cv2.VideoCapture(0)
     time.sleep(0.5)
-    
+
     if len(pick_list) == 0 or len(drop_list) == 0:
         print("missing targets, aborting")
         return False
-    
+
     # Match 1 part to 1 drop zone (uses the smaller count)
     batch_size = min(len(pick_list), len(drop_list))
     print(f"\n[PHASE 3] Executing batch of {batch_size} operations.")
@@ -206,37 +247,33 @@ def phase_execute_batch(api, pick_list, drop_list):
 
         print(f"Task {i+1}: Moving {pick_x, pick_y} to {drop_x, drop_y}")
 
-        # --- PICK SEQUENCE ---
-        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
-        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_PICK)
-        #optional alternate function call method to include a rotation of the gripper angle
-        #dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE, 45) 
+        # --- PICK SEQUENCE with retries ---
+        picked = False
+        for attempt in range(1, MAX_PICK_RETRIES + 1):
+            dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
+            dobotArm.move_to_xyz(api, pick_x, pick_y, Z_PICK)
+            dobotArm.close_gripper(api)
+            dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
 
-        dobotArm.close_gripper(api)
-        dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
+            # quick camera check: if object still present near pick coords -> pick failed
+            still_present = quick_check_pick_present(pick_x, pick_y)
+            if not still_present:
+                picked = True
+                break
+
+            print(f"Pick attempt {attempt} failed for item {i+1} (object still at pick location). Retrying...")
+            dobotArm.move_to_home(api)
+            time.sleep(0.5)
+
+        if not picked:
+            print(f"Failed to pick item {i+1} after {MAX_PICK_RETRIES} attempts.")
+            return False
 
         # --- PLACE SEQUENCE ---
         dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
         dobotArm.open_gripper(api)
         dobotArm.stop_pump(api)
         dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
-
-    # irl, it is ok for 1 dish to contain multiple parts
-    # if len(pick_list) > len(drop_list):
-    #     for i in range(len(pick_list)):
-    #         pick_x, pick_y = pick_list[i]
-    #         drop_x, drop_y = drop_list[0]
-    #         # --- PICK SEQUENCE ---
-    #         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
-    #         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_PICK)
-    #         dobotArm.close_gripper(api)
-    #         dobotArm.move_to_xyz(api, pick_x, pick_y, Z_SAFE)
-
-    #     # --- PLACE SEQUENCE ---
-    #         dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
-    #         dobotArm.open_gripper(api)
-    #         dobotArm.stop_pump(api)
-    #         dobotArm.move_to_xyz(api, drop_x, drop_y, Z_SAFE)
 
     print("\nBatch Complete.")
     return True
@@ -250,24 +287,58 @@ dobotArm.initialize_robot(api)
 dobotArm.open_gripper(api)
 dobotArm.stop_pump(api)
 
-while machine_state == "scanning plate":
+MAX_RESCAN_CYCLES = 3
+
+running = True
+print("Press ESC in the detection window to stop.")
+
+while running:
+    # PHASE 1: detect drop zones
     drop_zone = phase_detect_plates()
-    if drop_zone is not None:
-        next_state()
+    if drop_zone is None:
+        print("Exit requested during plate detection.")
+        break
 
-
-while machine_state == "scanning target":
+    # PHASE 2: detect targets
     pick_target = phase_detect_targets()
-    if pick_target is not None:
-        next_state()
+    if pick_target is None:
+        print("Exit requested during target detection.")
+        break
 
-
-while machine_state == "pick place":
+    # PHASE 3: execute pick/place with rescan retry logic
     completed = phase_execute_batch(api, pick_target, drop_zone)
-    if completed:
-        next_state()
-    else: break
+    if not completed:
+        print("Batch failed. Attempting to rescan and retry.")
+        retry = 0
+        while retry < MAX_RESCAN_CYCLES and not completed:
+            retry += 1
+            print(f"Rescan retry {retry}/{MAX_RESCAN_CYCLES}")
+            drop_zone = phase_detect_plates()
+            if drop_zone is None:
+                print("Exit during plate detection on rescan.")
+                running = False
+                break
+            pick_target = phase_detect_targets()
+            if pick_target is None:
+                print("Exit during target detection on rescan.")
+                running = False
+                break
+            completed = phase_execute_batch(api, pick_target, drop_zone)
 
+        if not completed:
+            print("Retries exhausted or aborted; returning to scanning for next job.")
+            continue
 
+    # Batch succeeded
+    print("Batch complete. Moving to HOME and continuing scanning.")
+    try:
+        dobotArm.move_to_home(api)
+    except Exception:
+        pass
+    dobotArm.open_gripper(api)
+    dobotArm.stop_pump(api)
+    time.sleep(0.5)
+
+# Clean up
 cap.release()
 cv2.destroyAllWindows()
