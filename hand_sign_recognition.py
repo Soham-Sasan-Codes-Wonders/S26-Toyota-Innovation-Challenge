@@ -234,19 +234,12 @@ class HandSignRecognizer:
         if self.camera:
             self.camera.release()
         cv2.destroyAllWindows()
-                    elapsed = time.time() - fps_time
-                    fps = 30 / elapsed
-                    print(f"\nFPS: {fps:.1f}")
-                    fps_time = time.time()
+        elapsed = time.time() - fps_time
+        fps = 30 / elapsed
+        print(f"\nFPS: {fps:.1f}")
+        fps_time = time.time()
 
-                # Check for exit
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    break
-
-        finally:
-            self.close()
-
+        
     def close(self):
         """Release camera and close windows."""
         if self.camera:
