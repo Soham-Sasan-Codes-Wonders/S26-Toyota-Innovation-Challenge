@@ -17,6 +17,7 @@ import os
 import time
 import numpy as np
 import cv2
+import json
 
 
 def pixel_to_robot(u, v, H):
@@ -53,6 +54,13 @@ def main():
     parser.add_argument("--max-aspect-ratio", type=float, default=3.5, help="Maximum bounding box aspect ratio (w/h)")
     parser.add_argument("--stability-frames", type=int, default=3, help="Frames a detection must persist to be considered stable")
     parser.add_argument("--pixel-tolerance", type=int, default=20, help="Pixels for centroid matching across frames")
+    parser.add_argument("--stability-lock-frames", type=int, default=60, help="Frames required to auto-lock detections (progress shown)")
+    parser.add_argument("--center-roi", type=float, default=1.0, help="Fraction of frame to restrict detection to center (0-1); 1.0 disables cropping")
+    parser.add_argument("--exclude-specular", action="store_true", help="Exclude specular highlights from mask (low saturation, high value)")
+    parser.add_argument("--specular-v-threshold", type=int, default=200, help="Value (V) lower bound for specular detection 0-255")
+    parser.add_argument("--specular-s-threshold", type=int, default=60, help="Saturation (S) upper bound for specular detection 0-255")
+    parser.add_argument("--save-selected", type=str, default=None, help="Path to write JSON with selected object details")
+    parser.add_argument("--append-selected", action="store_true", help="Append selected JSON to file instead of overwriting")
     args = parser.parse_args()
 
     base = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -89,13 +97,31 @@ def main():
         return
 
     h, w = frame.shape[:2]
+    # compute central ROI if requested
+    if args.center_roi and args.center_roi > 0 and args.center_roi < 1.0:
+        halfw = int(w * args.center_roi / 2.0)
+        halfh = int(h * args.center_roi / 2.0)
+        roi_x1 = max(0, (w // 2) - halfw)
+        roi_y1 = max(0, (h // 2) - halfh)
+        roi_x2 = min(w, (w // 2) + halfw)
+        roi_y2 = min(h, (h // 2) + halfh)
+    else:
+        roi_x1, roi_y1, roi_x2, roi_y2 = 0, 0, w, h
     new_K, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (w, h), 1)
     map1, map2 = cv2.initUndistortRectifyMap(camera_matrix, dist_coeffs, None, new_K, (w, h), cv2.CV_16SC2)
 
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     # ensure odd kernel size and at least 3
     k = max(3, args.morph_kernel | 1)
-    kernel = np.ones((k, k), np.uint8)
+    # closing kernel (fills gaps)
+    kernel_close = np.ones((k, k), np.uint8)
+    # opening kernel sized relative to min area to avoid removing very small objects
+    open_k = max(3, int(np.sqrt(max(1, args.min_area))))
+    if open_k % 2 == 0:
+        open_k += 1
+    if open_k > k:
+        open_k = k
+    kernel_open = np.ones((open_k, open_k), np.uint8)
 
     bg_captured = False
     bg_gray = None
@@ -123,40 +149,52 @@ def main():
         # adaptive threshold
         thresh = cv2.adaptiveThreshold(clahe_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
 
+        # compute HSV once (used by red and specular removal)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
         # red mask as color cue (optional)
         if not args.no_red:
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             red_mask = cv2.inRange(hsv, np.array([0, 100, 70]), np.array([10, 255, 255]))
             red_mask = cv2.bitwise_or(red_mask, cv2.inRange(hsv, np.array([170, 100, 70]), np.array([180, 255, 255])))
-            red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+            red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel_close, iterations=1)
         else:
             red_mask = np.zeros_like(thresh)
 
         # edge cue (optional)
         if not args.no_edges:
             edges = cv2.Canny(clahe_img, 50, 150)
-            edges = cv2.dilate(edges, kernel, iterations=1)
+            edges = cv2.dilate(edges, kernel_close, iterations=1)
         else:
             edges = np.zeros_like(thresh)
 
-        # fuse cues (start from threshold and merge other masks)
-        combined = thresh.copy()
-        if red_mask is not None:
-            combined = cv2.bitwise_or(combined, red_mask)
-        if edges is not None:
-            combined = cv2.bitwise_or(combined, edges)
-
+        # If a background was captured, use background difference as the primary cue
         if bg_captured and bg_gray is not None:
-            diff = cv2.absdiff(clahe_img, bg_gray)
+            cur = clahe_img.copy()
+            cur_blur = cv2.GaussianBlur(cur, (5, 5), 0)
+            bg_blur = cv2.GaussianBlur(bg_gray, (5, 5), 0)
+            diff = cv2.absdiff(cur_blur, bg_blur)
             _, bg_mask = cv2.threshold(diff, args.bg_threshold, 255, cv2.THRESH_BINARY)
-            bg_mask = cv2.morphologyEx(bg_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-            combined = cv2.bitwise_or(combined, bg_mask)
+            bg_mask = cv2.morphologyEx(bg_mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
+            bg_mask = cv2.morphologyEx(bg_mask, cv2.MORPH_CLOSE, kernel_close, iterations=args.morph_iterations)
+            combined = bg_mask.copy()
         else:
+            # fuse cues (start from threshold and merge other masks)
+            combined = thresh.copy()
+            if red_mask is not None:
+                combined = cv2.bitwise_or(combined, red_mask)
+            if edges is not None:
+                combined = cv2.bitwise_or(combined, edges)
             bg_mask = None
 
-        # remove small speckles then close gaps
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=args.morph_iterations)
+        # remove specular highlights (bright, low-saturation) if requested
+        if args.exclude_specular:
+            spec_mask = cv2.inRange(hsv, (0, 0, args.specular_v_threshold), (179, args.specular_s_threshold, 255))
+            spec_mask = cv2.morphologyEx(spec_mask, cv2.MORPH_CLOSE, kernel_open, iterations=1)
+            combined = cv2.bitwise_and(combined, cv2.bitwise_not(spec_mask))
+
+        # remove small speckles then close gaps (use smaller open kernel to preserve tiny objects)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel_open, iterations=1)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel_close, iterations=args.morph_iterations)
 
         contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -175,27 +213,40 @@ def main():
             circularity = 4.0 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0.0
             aspect = float(wbox) / hbox if hbox > 0 else float('inf')
 
-            # geometric filters to prefer 'whole' compact objects and reject hands/noise
-            if solidity < args.min_solidity:
-                continue
-            if extent < args.min_extent:
-                continue
-            if circularity < args.min_circularity:
-                continue
-            if aspect < args.min_aspect_ratio or aspect > args.max_aspect_ratio:
-                continue
-
+            # compute centroid early so we can apply ROI and skin checks
             M = cv2.moments(cnt)
             if M.get('m00', 0) == 0:
                 continue
             cx, cy = int(M['m10'] / M['m00']), int(M['m01'] / M['m00'])
+            # skip detections outside requested central ROI
+            if not (roi_x1 <= cx <= roi_x2 and roi_y1 <= cy <= roi_y2):
+                continue
+
+            # size-adaptive relaxation: for very small contours relax shape thresholds
+            rel = min(1.0, area / max(1.0, (args.min_area * 4.0)))
+            rel = max(0.5, rel)
+            eff_min_solidity = args.min_solidity * rel
+            eff_min_extent = args.min_extent * rel
+            eff_min_circularity = args.min_circularity * rel
+
+            if solidity < eff_min_solidity:
+                continue
+            if extent < eff_min_extent:
+                continue
+            if circularity < eff_min_circularity:
+                continue
+            if aspect < args.min_aspect_ratio or aspect > args.max_aspect_ratio:
+                continue
+
+            # (no skin/hand exclusion here — use dedicated hand detector later)
+
             rx, ry = pixel_to_robot(cx, cy, H)
             candidates.append({'robot': (rx, ry), 'pixel': (cx, cy), 'area': area, 'contour': cnt,
                                 'solidity': solidity, 'extent': extent, 'circularity': circularity,
                                 'bbox': (x, y, wbox, hbox), 'aspect': aspect})
 
         # Simple centroid-based tracking to require stability across frames
-        # Match candidates to existing tracks by proximity
+        # Match candidates to existing tracks by proximity and maintain per-track locks
         for cand in candidates:
             cx, cy = cand['pixel']
             best = None
@@ -207,6 +258,7 @@ def main():
                     best = t
                     best_d = d
             if best is not None:
+                # update track properties
                 best['centroid'] = (cx, cy)
                 best['stability'] += 1
                 best['last_seen'] = frame_idx
@@ -217,11 +269,37 @@ def main():
                 best['circularity'] = cand['circularity']
                 best['bbox'] = cand['bbox']
                 best['pixel'] = cand['pixel']
+                best['robot'] = cand.get('robot', best.get('robot'))
+
+                # Per-track lock: only start counting after short-term stability
+                if best['stability'] >= args.stability_frames:
+                    if 'lock_centroid' not in best or best.get('lock_counter', 0) == 0:
+                        best['lock_centroid'] = (cx, cy)
+                        best['lock_counter'] = 1
+                        best['locked'] = False
+                    else:
+                        dx = cx - best['lock_centroid'][0]
+                        dy = cy - best['lock_centroid'][1]
+                        if dx * dx + dy * dy <= (args.pixel_tolerance ** 2):
+                            best['lock_counter'] = best.get('lock_counter', 0) + 1
+                        else:
+                            best['lock_counter'] = 1
+                            best['lock_centroid'] = (cx, cy)
+                            best['locked'] = False
+
+                    if not best.get('locked', False) and best.get('lock_counter', 0) >= args.stability_lock_frames:
+                        best['locked'] = True
+                        print(f"[LOCKED] Track {best['id']} locked at pixel {best['pixel']} robot {best.get('robot')}")
+                else:
+                    best['lock_counter'] = 0
+                    best['locked'] = False
             else:
+                # create new track (include robot coords)
                 tracks.append({'id': next_track_id, 'centroid': (cx, cy), 'stability': 1,
                                'last_seen': frame_idx, 'contour': cand['contour'], 'area': cand['area'],
                                'solidity': cand['solidity'], 'extent': cand['extent'], 'circularity': cand['circularity'],
-                               'bbox': cand['bbox'], 'pixel': cand['pixel']})
+                               'bbox': cand['bbox'], 'pixel': cand['pixel'], 'robot': cand.get('robot'),
+                               'lock_counter': 0, 'lock_centroid': (cx, cy), 'locked': False})
                 next_track_id += 1
 
         # prune stale tracks (not seen for a short while)
@@ -247,11 +325,26 @@ def main():
             area = int(obj['area'])
             solidity = obj.get('solidity', 0.0)
             x, y, wbox, hbox = obj.get('bbox', cv2.boundingRect(cnt))
-            cv2.drawContours(display, [cnt], -1, (0, 255, 0), 2)
-            cv2.rectangle(display, (x, y), (x + wbox, y + hbox), (255, 0, 0), 1)
+            lock_counter = obj.get('lock_counter', 0)
+            lock_progress = int(min(100, (lock_counter / max(1, args.stability_lock_frames)) * 100))
+            locked = obj.get('locked', False)
+            if locked:
+                contour_color = (0, 255, 0)
+                rect_color = (0, 200, 0)
+                text_color = (0, 200, 0)
+            else:
+                contour_color = (0, 165, 255)
+                rect_color = (255, 0, 0)
+                text_color = (0, 200, 200)
+            cv2.drawContours(display, [cnt], -1, contour_color, 2 if locked else 1)
+            cv2.rectangle(display, (x, y), (x + wbox, y + hbox), rect_color, 2 if locked else 1)
             cv2.putText(display, f"{i+1}", (cx + 10, cy + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-            cv2.putText(display, f"A:{area}", (cx + 10, cy + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 200), 2)
-            cv2.putText(display, f"S:{solidity:.2f}", (cx + 10, cy + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 200), 2)
+            cv2.putText(display, f"A:{area}", (cx + 10, cy + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
+            cv2.putText(display, f"S:{solidity:.2f}", (cx + 10, cy + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
+            if locked:
+                cv2.putText(display, "LOCKED", (cx + 10, cy + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            else:
+                cv2.putText(display, f"Lock:{lock_progress}%", (cx + 10, cy + 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 200), 2)
 
         status = f"BG: {'yes' if bg_captured else 'no (press B)'}  Detected: {len(stable_tracks)}  (E=exit)"
         cv2.putText(display, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
@@ -284,8 +377,13 @@ def main():
                 # Apply CLAHE to the stored background only when CLAHE is enabled
                 if not args.no_clahe:
                     bg_gray = clahe.apply(bg_gray)
+                # blur background to reduce speckle noise
+                bg_gray = cv2.GaussianBlur(bg_gray, (5, 5), 0)
                 bg_captured = True
-                print('Background captured')
+                # clear existing tracks so old detections don't persist
+                tracks = []
+                next_track_id = 1
+                print('Background captured and tracks cleared')
             continue
 
         if key == ord('e'):
@@ -295,10 +393,33 @@ def main():
             idx = key - ord('1')
             if idx < len(stable_tracks):
                 sel = stable_tracks[idx]
-                rx, ry = sel['robot']
-                print(f"Selected #{idx+1}: pixel={sel['pixel']} area={sel['area']:.0f} -> robot=({rx:.1f}, {ry:.1f})")
-                # For testing we just print the robot coordinate; collaborator can copy this into pick script
-                break
+                if not sel.get('locked', False):
+                    print(f"Selection #{idx+1} ignored: object not locked yet ({sel.get('lock_counter',0)}/{args.stability_lock_frames})")
+                else:
+                    rx, ry = sel['robot']
+                    print(f"Selected #{idx+1}: pixel={sel['pixel']} area={sel['area']:.0f} -> robot=({rx:.1f}, {ry:.1f})")
+                    # Optionally save selection to file for automation
+                    if args.save_selected:
+                        out = {
+                            'selected_index': idx + 1,
+                            'pixel': [int(sel['pixel'][0]), int(sel['pixel'][1])],
+                            'robot': [float(sel['robot'][0]), float(sel['robot'][1])],
+                            'area': float(sel.get('area', 0)),
+                            'bbox': sel.get('bbox')
+                        }
+                        mode = 'a' if args.append_selected else 'w'
+                        try:
+                            with open(args.save_selected, mode, encoding='utf8') as f:
+                                if args.append_selected:
+                                    f.write(json.dumps(out) + '\n')
+                                else:
+                                    json.dump(out, f, indent=2)
+                            print(f"Saved selection to {args.save_selected}")
+                        except Exception as e:
+                            print(f"Failed to save selection: {e}")
+
+                    # For testing we just print the robot coordinate; collaborator can copy this into pick script
+                    break
         frame_idx += 1
     cap.release()
     cv2.destroyAllWindows()
