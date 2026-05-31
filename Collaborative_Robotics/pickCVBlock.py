@@ -774,22 +774,24 @@ def flush_key_buffer():
 # contains an oversimplified state machine that runs the three phases sequentially. You can modify the logic to fit your specific use case.
 # ---------------------------------------------------------
 hand_channel = None
-if args.hand_model_url:
+# Auto-enable hand channel when user provided a model URL or requested debug
+create_hand = bool(args.hand_model_url) or args.debug_windows or args.debug
+if create_hand:
     try:
         hand_channel = HandSignChannel(
-            args.hand_model_url,
+            args.hand_model_url or None,
             camera_id=args.hand_camera,
             confidence_threshold=args.hand_confidence,
             pause_sign=args.hand_pause_sign,
             resume_sign=args.hand_resume_sign,
-            show_debug=args.debug_windows,
+            show_debug=(args.debug_windows or args.debug),
         )
         hand_channel.start()
     except Exception as e:
         print(f"[HAND] Failed to start hand sign channel: {e}")
 
 if hand_channel is None:
-    print("[HAND] Hand sign channel disabled. Run with --hand-model-url to enable.")
+    print("[HAND] Hand sign channel disabled. Run with --hand-model-url to enable, or pass --debug to auto-enable when MediaPipe is installed.")
 
 # robot initialization
 dobotArm.initialize_robot(api)
